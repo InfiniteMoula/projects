@@ -1,0 +1,13 @@
+pandas==2.2.2
+pyarrow==17.0.0
+httpx==0.27.0
+beautifulsoup4==4.12.3
+lxml==5.2.1
+python-dotenv==1.0.1
+PyYAML==6.0.2
+jsonschema==4.23.0
+rapidfuzz==3.9.6
+dnspython==2.6.1
+pdfminer.six==20231228
+tldextract==5.1.2
+psutil==5.9.8

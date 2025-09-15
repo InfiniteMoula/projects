@@ -1,0 +1,41 @@
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dll
+
+# --- Virtual env ---
+.venv/
+env/
+venv/
+
+# --- Logs ---
+*.log
+logs/
+out/*/logs/
+
+# --- Datasets / Outputs ---
+out/
+output/
+*.csv
+*.parquet
+*.json
+*.xlsx
+*.tsv
+
+# --- Jupyter / VSCode ---
+.ipynb_checkpoints/
+.vscode/
+*.code-workspace
+
+# --- System ---
+.DS_Store
+Thumbs.db
+
+# --- Large temp files ---
+*.zip
+*.tar
+*.gz
+*.7z
