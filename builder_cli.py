@@ -1,6 +1,8 @@
 import argparse
 import json
 import os
+import subprocess
+import sys
 import time
 import traceback
 import uuid
@@ -11,6 +13,7 @@ import yaml
 from jsonschema import validate as js_validate
 
 from utils import config, io, pipeline
+import create_job
 
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
@@ -235,6 +238,150 @@ def explain(steps):
         print(f"{i:02d}. {step}")
 
 
+def run_batch_jobs(args):
+    """Process multiple NAF codes in batch mode."""
+    logger = pipeline.configure_logging(args.verbose)
+    
+    # Setup directories
+    jobs_dir = Path(args.jobs_dir).expanduser().resolve()
+    output_base_dir = Path(args.output_dir).expanduser().resolve()
+    template_path = args.template or (Path(__file__).parent / "job_template.yaml")
+    
+    # Ensure directories exist
+    io.ensure_dir(jobs_dir)
+    io.ensure_dir(output_base_dir)
+    
+    # Validate input file
+    input_path = Path(args.input).expanduser().resolve()
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+    
+    # Generate job files
+    logger.info(f"Generating {len(args.naf_codes)} job files...")
+    job_files = create_job.generate_batch_jobs(
+        args.naf_codes,
+        jobs_dir,
+        template_path,
+        args.profile
+    )
+    
+    if args.dry_run:
+        logger.info("Dry run mode: jobs generated but not executed")
+        logger.info(f"Generated job files: {[str(f) for f in job_files]}")
+        return {"status": "OK", "generated_jobs": len(job_files), "dry_run": True}
+    
+    # Execute jobs sequentially
+    results = []
+    failed_jobs = []
+    
+    logger.info(f"Executing {len(job_files)} jobs sequentially...")
+    
+    for i, job_file in enumerate(job_files, 1):
+        naf_code = args.naf_codes[i-1]
+        niche_name = create_job.generate_niche_name(naf_code)
+        job_output_dir = output_base_dir / niche_name
+        
+        logger.info(f"[{i}/{len(job_files)}] Processing NAF {naf_code}...")
+        
+        # Prepare command arguments
+        cmd_args = [
+            sys.executable, "builder_cli.py", "run-profile",
+            "--job", str(job_file),
+            "--input", str(input_path),
+            "--out", str(job_output_dir),
+            "--profile", args.profile,
+        ]
+        
+        # Add optional arguments
+        if args.sample > 0:
+            cmd_args.extend(["--sample", str(args.sample)])
+        if args.workers != 8:
+            cmd_args.extend(["--workers", str(args.workers)])
+        if args.max_ram_mb > 0:
+            cmd_args.extend(["--max-ram-mb", str(args.max_ram_mb)])
+        if args.verbose:
+            cmd_args.append("--verbose")
+        
+        try:
+            # Execute job
+            start_time = time.time()
+            result = subprocess.run(
+                cmd_args,
+                cwd=Path(__file__).parent,
+                capture_output=True,
+                text=True,
+                timeout=3600  # 1 hour timeout per job
+            )
+            
+            elapsed = time.time() - start_time
+            
+            if result.returncode == 0:
+                logger.info(f"✅ NAF {naf_code} completed successfully in {elapsed:.1f}s")
+                results.append({
+                    "naf_code": naf_code,
+                    "status": "SUCCESS",
+                    "duration": elapsed,
+                    "output_dir": str(job_output_dir)
+                })
+            else:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                logger.error(f"❌ NAF {naf_code} failed: {error_msg}")
+                failed_jobs.append(naf_code)
+                results.append({
+                    "naf_code": naf_code,
+                    "status": "FAILED",
+                    "duration": elapsed,
+                    "error": error_msg
+                })
+                
+                if not args.continue_on_error:
+                    logger.error("Stopping batch processing due to error")
+                    break
+                    
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ NAF {naf_code} timed out after 1 hour")
+            failed_jobs.append(naf_code)
+            results.append({
+                "naf_code": naf_code,
+                "status": "TIMEOUT",
+                "duration": 3600,
+                "error": "Job timed out"
+            })
+            
+            if not args.continue_on_error:
+                logger.error("Stopping batch processing due to timeout")
+                break
+                
+        except Exception as exc:
+            logger.error(f"❌ NAF {naf_code} failed with exception: {exc}")
+            failed_jobs.append(naf_code)
+            results.append({
+                "naf_code": naf_code,
+                "status": "ERROR",
+                "duration": 0,
+                "error": str(exc)
+            })
+            
+            if not args.continue_on_error:
+                logger.error("Stopping batch processing due to exception")
+                break
+    
+    # Summary
+    successful = [r for r in results if r["status"] == "SUCCESS"]
+    logger.info(f"Batch processing completed: {len(successful)}/{len(args.naf_codes)} jobs successful")
+    
+    if failed_jobs:
+        logger.warning(f"Failed NAF codes: {failed_jobs}")
+    
+    return {
+        "status": "OK" if not failed_jobs or args.continue_on_error else "FAILED",
+        "total_jobs": len(args.naf_codes),
+        "successful_jobs": len(successful),
+        "failed_jobs": len(failed_jobs),
+        "results": results
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(prog="builder_cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -260,9 +407,46 @@ def main():
     run_profile_parser.add_argument("--profile", choices=list(PROFILES.keys()), required=True)
     run_profile_parser.add_argument("--explain", action="store_true")
 
+    # Batch command for processing multiple NAF codes
+    batch_parser = sub.add_parser("batch", help="Generate and run jobs for multiple NAF codes")
+    batch_parser.add_argument("--naf", dest="naf_codes", action="append", required=True,
+                             help="NAF code(s) to process (can be used multiple times)")
+    batch_parser.add_argument("--template", type=Path, 
+                             help="Path to job template file (default: job_template.yaml)")
+    batch_parser.add_argument("--profile", choices=list(PROFILES.keys()), default="quick",
+                             help="Profile to use for jobs (default: quick)")
+    batch_parser.add_argument("--input", required=True,
+                             help="Input file for processing")
+    batch_parser.add_argument("--output-dir", "--out-dir", required=True,
+                             help="Base output directory for all jobs")
+    batch_parser.add_argument("--jobs-dir", default="jobs_generated",
+                             help="Directory to store generated job files (default: jobs_generated)")
+    batch_parser.add_argument("--dry-run", action="store_true",
+                             help="Generate jobs but don't run them")
+    batch_parser.add_argument("--sample", type=int, default=0,
+                             help="Sample size for testing")
+    batch_parser.add_argument("--workers", type=int, default=8,
+                             help="Number of workers")
+    batch_parser.add_argument("--verbose", action="store_true",
+                             help="Verbose output")
+    batch_parser.add_argument("--max-ram-mb", type=int, default=0,
+                             help="Maximum RAM budget in MB (0 = unlimited)")
+    batch_parser.add_argument("--continue-on-error", action="store_true",
+                             help="Continue processing other NAF codes if one fails")
+    batch_parser.add_argument("--json", action="store_true",
+                             help="Output results in JSON format")
+
     sub.add_parser("resume", parents=[common])
 
     args = parser.parse_args()
+    
+    # Handle batch command separately
+    if args.cmd == "batch":
+        result = run_batch_jobs(args)
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    
     job = load_job(args.job)
 
     if args.cmd == "run-step":
