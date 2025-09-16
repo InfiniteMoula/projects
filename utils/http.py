@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 from pathlib import Path
 from typing import Iterable, Mapping, MutableMapping, Optional, Callable
 
@@ -15,6 +17,92 @@ LOGGER = logging.getLogger("utils.http")
 
 class HttpError(RuntimeError):
     """Raised when an HTTP operation fails."""
+
+
+def request_with_backoff(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    max_attempts: int = 5,
+    backoff_factor: float = 0.5,
+    backoff_max: float = 8.0,
+    retry_statuses: Optional[Iterable[int]] = None,
+    request_tracker: Optional[Callable[[int], None]] = None,
+    logger: Optional[logging.Logger] = None,
+    **kwargs: object,
+) -> httpx.Response:
+    """Perform an HTTP request with exponential backoff and jitter."""
+
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+
+    retry_codes = set(retry_statuses or (408, 409, 425, 429, 500, 502, 503, 504))
+    log = logger or LOGGER
+    last_exc: Optional[httpx.HTTPError] = None
+    last_response: Optional[httpx.Response] = None
+    request_kwargs = dict(kwargs) if kwargs else {}
+
+    request_method = getattr(client, "request", None)
+    if callable(request_method):
+        def _perform_request() -> httpx.Response:
+            return request_method(method, url, **request_kwargs)
+    else:
+        fallback = getattr(client, method.lower(), None)
+        if not callable(fallback):
+            raise HttpError(f"client {client!r} does not support method {method}")
+
+        def _perform_request() -> httpx.Response:
+            return fallback(url, **request_kwargs)
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = _perform_request()
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if request_tracker:
+                request_tracker(0)
+            if attempt >= max_attempts:
+                raise HttpError(f"{method} {url} failed after {attempt} attempts: {exc}") from exc
+            base_delay = min(backoff_max, backoff_factor * (2 ** (attempt - 1)))
+            sleep_for = base_delay * random.uniform(0.5, 1.0) if base_delay else 0.0
+            log.warning(
+                "HTTP %s %s failed (attempt %d/%d): %s; retrying in %.2fs",
+                method,
+                url,
+                attempt,
+                max_attempts,
+                exc,
+                sleep_for,
+            )
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            continue
+
+        last_response = response
+        if retry_codes and response.status_code in retry_codes and attempt < max_attempts:
+            base_delay = min(backoff_max, backoff_factor * (2 ** (attempt - 1)))
+            sleep_for = base_delay * random.uniform(0.5, 1.0) if base_delay else 0.0
+            log.warning(
+                "HTTP %s %s returned %s (attempt %d/%d); retrying in %.2fs",
+                method,
+                url,
+                response.status_code,
+                attempt,
+                max_attempts,
+                sleep_for,
+            )
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            continue
+
+        return response
+
+    if last_response is not None:
+        return last_response
+
+    assert last_exc is not None
+    raise HttpError(f"{method} {url} failed") from last_exc
 
 
 def stream_download(

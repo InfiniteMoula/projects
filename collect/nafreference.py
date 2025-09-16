@@ -10,7 +10,7 @@ NAF is the French classification of economic activities.
 from pathlib import Path
 import logging
 import pandas as pd
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from utils import io
 from utils.http import get_json, stream_download, HttpError
@@ -135,12 +135,12 @@ def _download_fallback_naf_data(outdir: Path, naf_filter: Optional[str] = None, 
 def run(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     """
     Main entry point for NAF reference collection.
-    
+
     Configuration options:
     - nafreference.naf_code: Specific NAF code to filter by (optional)
     - nafreference.timeout: Request timeout in seconds (default: 60)
     - nafreference.source: Data source preference ('insee' or 'fallback', default: 'auto')
-    
+
     Returns:
     - file: Path to the generated parquet file
     - status: Processing status
@@ -148,51 +148,103 @@ def run(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     """
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir")) / "nafreference"
     io.ensure_dir(outdir)
-    
-    # Get configuration
+
+    existing_input = ctx.get("input_path") or ctx.get("input")
+    existing_path = None
+    if isinstance(existing_input, Path):
+        if existing_input.exists():
+            existing_path = existing_input
+    elif isinstance(existing_input, str) and existing_input and not existing_input.lower().startswith("http"):
+        try:
+            candidate = Path(existing_input)
+        except (OSError, ValueError):
+            candidate = None
+        else:
+            if candidate.exists():
+                existing_path = candidate
+
+    if existing_path:
+        return {
+            "status": "SKIPPED",
+            "reason": "INPUT_ALREADY_AVAILABLE",
+            "file": str(existing_path),
+            "context_updates": {"input": str(existing_path), "input_path": str(existing_path)},
+        }
+
     naf_config = cfg.get("nafreference") or {}
-    naf_code = naf_config.get("naf_code")
     timeout = float(naf_config.get("timeout", 60))
     source_preference = naf_config.get("source", "auto")
-    
+
+    raw_codes = []
+    if "naf_code" in naf_config:
+        raw_codes.append(naf_config.get("naf_code"))
+    if "naf_codes" in naf_config:
+        value = naf_config.get("naf_codes")
+        if isinstance(value, (list, tuple, set)):
+            raw_codes.extend(value)
+        else:
+            raw_codes.append(value)
+
+    filters = (cfg.get("filters") or {})
+    raw_codes.extend(filters.get("naf_include") or [])
+
+    naf_codes: List[str] = []
+    seen = set()
+    for code in raw_codes:
+        if not code:
+            continue
+        code_str = str(code).strip()
+        if not code_str or code_str in seen:
+            continue
+        seen.add(code_str)
+        naf_codes.append(code_str)
+
+    naf_code = naf_codes[0] if naf_codes else None
+    if naf_code:
+        LOGGER.info("Resolved NAF code '%s' for extraction", naf_code)
+    else:
+        LOGGER.info("No specific NAF code configured; fetching full reference dataset")
+
     if ctx.get("dry_run"):
         path = outdir / "empty.parquet"
-        # Create empty parquet with minimal schema
         empty_df = pd.DataFrame({"code_naf": [], "libelle": []})
         with ParquetBatchWriter(path) as writer:
             writer.write_pandas(empty_df, preserve_index=False)
-        return {"file": str(path), "status": "DRY_RUN"}
-    
+        return {
+            "file": str(path),
+            "status": "DRY_RUN",
+            "context_updates": {"input": str(path), "input_path": str(path)},
+        }
+
     output_file = None
     df = None
-    
-    # Try INSEE API first if preferred or auto
+    records_count = 0
+
     if source_preference in ("insee", "auto"):
         LOGGER.info("Attempting to fetch NAF data from INSEE API")
         df = _download_insee_naf_data(naf_code, timeout)
-        
         if df is not None and not df.empty:
             output_file = outdir / "naf_reference_insee.parquet"
             with ParquetBatchWriter(output_file) as writer:
                 writer.write_pandas(df, preserve_index=False)
-    
-    # Fall back to open data sources if INSEE API failed or fallback preferred
-    if (output_file is None or source_preference == "fallback"):
+            records_count = len(df)
+
+    if output_file is None or source_preference == "fallback":
         LOGGER.info("Using fallback open data sources for NAF reference")
         output_file = _download_fallback_naf_data(outdir, naf_code, timeout)
-        
         if output_file and output_file.exists():
-            # Read back to get record count
             df = pd.read_parquet(output_file)
-    
+            records_count = len(df)
+
     if output_file is None or not output_file.exists():
         return {"status": "FAILED", "reason": "NO_DATA_SOURCE_AVAILABLE"}
-    
-    records_count = len(df) if df is not None else 0
-    
+
+    naf_filter_value = naf_code if naf_code else "all"
+
     return {
         "file": str(output_file),
         "status": "OK",
         "records_count": records_count,
-        "naf_filter": naf_code if naf_code else "all"
+        "naf_filter": naf_filter_value,
+        "context_updates": {"input": str(output_file), "input_path": str(output_file)},
     }

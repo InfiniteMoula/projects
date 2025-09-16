@@ -73,6 +73,20 @@ def atomic_write_iter(path: os.PathLike[str] | str, chunks: Iterable[bytes]) -> 
                 LOGGER.debug("temporary file cleanup failed for %s", tmp_path)
 
 
+
+
+def read_json(path: os.PathLike[str] | str, *, default: object | None = None, encoding: str = "utf-8") -> object:
+    """Load JSON from *path* if it exists, otherwise return *default*."""
+    target = Path(path)
+    if not target.exists():
+        return default
+    try:
+        with target.open("r", encoding=encoding) as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.warning("failed to read json from %s: %s", target, exc)
+        return default
+
 def write_text(path: os.PathLike[str] | str, content: str, *, encoding: str = "utf-8") -> Path:
     return atomic_write(path, content.encode(encoding))
 

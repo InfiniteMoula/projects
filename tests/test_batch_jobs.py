@@ -90,6 +90,33 @@ profile: "{profile}"
         assert config["profile"] == "standard"
 
 
+def test_prepare_multi_naf_runs(tmp_path):
+    """Test helper that prepares job variants per NAF code."""
+    base_job = {
+        "niche": "base",
+        "filters": {"naf_include": ["base"]},
+        "output": {"dir": "out/base"},
+    }
+    base_out = tmp_path / "runs"
+    runs = builder_cli.prepare_multi_naf_runs(
+        base_job,
+        ["6920Z", "43.29A", "4711F, 4711G", "6920Z"],
+        base_out,
+    )
+
+    assert [r["naf_code"] for r in runs] == ["6920Z", "43.29A", "4711F", "4711G"]
+
+    first = runs[0]
+    expected_path = (base_out / "naf_6920Z").resolve()
+    assert first["outdir"] == expected_path
+    assert first["job"]["filters"]["naf_include"] == ["6920Z"]
+    assert first["job"]["niche"] == "naf_6920Z"
+    assert first["job"]["output"]["dir"] == str(expected_path)
+
+    # Original job should remain unchanged
+    assert base_job["filters"]["naf_include"] == ["base"]
+
+
 def test_batch_jobs_with_default_template(tmp_path):
     """Test batch job generation with default template."""
     # Copy the default template to a temporary location

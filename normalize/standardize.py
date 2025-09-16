@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 
+from utils import io
 from utils.parquet import ArrowCsvWriter, ParquetBatchWriter, iter_batches
 
 # --- config -------------------------------------------------------------
@@ -109,12 +110,18 @@ def run(cfg: dict, ctx: dict) -> dict:
                 pass
 
     total = 0
+    raw_rows_total = 0
+    filtered_rows_total = 0
+    batches = 0
     logger = ctx.get("logger")
 
     try:
         with ParquetBatchWriter(out_parquet, schema=ARROW_OUT_SCHEMA) as pq_writer, ArrowCsvWriter(out_csv) as csv_writer:
             for pdf in iter_batches(input_path, columns=usecols, batch_size=batch_rows):
-                if pdf.empty:
+                batches += 1
+                raw_rows = len(pdf)
+                raw_rows_total += raw_rows
+                if raw_rows == 0:
                     continue
 
                 object_cols = [col for col in pdf.columns if str(pdf[col].dtype) == "object"]
@@ -133,8 +140,6 @@ def run(cfg: dict, ctx: dict) -> dict:
                     naf_norm = _to_str(pdf[naf_col]).str.replace(r"[\s\.]", "", regex=True).str.lower()
                     mask = naf_norm.fillna("").str.startswith(naf_prefixes)
                     pdf = pdf[mask.fillna(False)]
-                    if pdf.empty:
-                        continue
 
                 if active_only:
                     state_col = next((c for c in [
@@ -142,8 +147,11 @@ def run(cfg: dict, ctx: dict) -> dict:
                     ] if c in pdf.columns), None)
                     if state_col:
                         pdf = pdf[_to_str(pdf[state_col]).eq("A")]
-                        if pdf.empty:
-                            continue
+
+                filtered_rows = len(pdf)
+                filtered_rows_total += filtered_rows
+                if filtered_rows == 0:
+                    continue
 
                 res = pd.DataFrame({
                     "siren": _to_str(_pick_first(pdf, ["siren"])),
@@ -170,22 +178,103 @@ def run(cfg: dict, ctx: dict) -> dict:
                 res["cp"] = res["cp"].str.extract(r"(\d{5})", expand=False).astype("string")
                 res["naf"] = res["naf"].astype("string")
 
-                total += len(res)
-                if res.empty:
+                rows_written = len(res)
+                total += rows_written
+                if rows_written == 0:
                     continue
 
                 table = pa.Table.from_pandas(res, preserve_index=False).cast(ARROW_OUT_SCHEMA)
                 pq_writer.write_table(table)
                 csv_writer.write_table(table)
 
+        elapsed = time.time() - t0
+        duration = round(elapsed, 3)
+        rows_per_s = total / elapsed if elapsed > 0 else 0.0
+        drop_pct = ((raw_rows_total - total) / raw_rows_total * 100) if raw_rows_total else 0.0
+
+        kpi_targets = (job.get("kpi_targets") or {})
+        kpi_evaluations: list[dict[str, object]] = []
+        min_lines_target_raw = kpi_targets.get("min_lines_per_s")
+        min_lines_target = float(min_lines_target_raw) if min_lines_target_raw is not None else None
+        if min_lines_target is not None:
+            kpi_evaluations.append({
+                "name": "lines_per_s",
+                "actual": rows_per_s,
+                "target": min_lines_target,
+                "met": rows_per_s >= min_lines_target,
+            })
+
+        summary = {
+            "status": "OK",
+            "step": "normalize.standardize",
+            "batches": batches,
+            "rows_raw": raw_rows_total,
+            "rows_after_filters": filtered_rows_total,
+            "rows_written": total,
+            "rows_dropped": max(raw_rows_total - total, 0),
+            "drop_pct": round(drop_pct, 2),
+            "duration_s": duration,
+            "rows_per_s": round(rows_per_s, 3),
+            "filters": {
+                "active_only": active_only,
+                "naf_prefixes": list(naf_prefixes),
+                "usecols_count": len(usecols) if hasattr(usecols, "__len__") else None,
+            },
+            "files": {
+                "parquet": str(out_parquet),
+                "csv": str(out_csv),
+            },
+        }
+        if kpi_evaluations:
+            summary["kpi_evaluations"] = kpi_evaluations
+            summary["kpi_status"] = "MET" if all(item["met"] for item in kpi_evaluations) else "WARN"
+            summary["kpi_targets"] = {"min_lines_per_s": min_lines_target}
+
+        reports_dir = outdir / "reports"
+        report_path = io.write_json(reports_dir / "standardize_summary.json", summary)
+        summary["report_path"] = str(report_path)
+
+        log_path = ctx.get("logs")
+        if log_path:
+            io.log_json(log_path, {
+                "step": "normalize.standardize",
+                "event": "summary",
+                "status": summary.get("kpi_status", "OK"),
+                "rows": total,
+                "rows_per_s": round(rows_per_s, 3),
+                "drop_pct": round(drop_pct, 2),
+                "report_path": str(report_path),
+            })
+
+        if logger:
+            kpi_phrase = ""
+            if kpi_evaluations:
+                details = "; ".join(
+                    f"{item['name']} {'OK' if item['met'] else 'WARN'} ({item['actual']:.2f}/{item['target']:.2f})"
+                    for item in kpi_evaluations
+                )
+                kpi_phrase = f" | KPI {details}"
+            logger.info(
+                "normalize.standardize summary | rows=%d | drop_pct=%.1f%% | rows_per_s=%.2f%s",
+                total,
+                drop_pct,
+                rows_per_s,
+                kpi_phrase,
+            )
+
+        files = [str(out_parquet), str(out_csv), str(report_path)]
         return {
             "status": "OK",
-            "files": [str(out_parquet), str(out_csv)],
+            "files": files,
             "rows": total,
-            "duration_s": round(time.time() - t0, 3),
+            "duration_s": duration,
+            "rows_per_s": round(rows_per_s, 3),
+            "summary": summary,
+            "report_path": str(report_path),
         }
 
     except Exception as exc:
         if logger:
             logger.exception("standardize failed: %s", exc)
         return {"status": "FAIL", "error": str(exc), "duration_s": round(time.time() - t0, 3)}
+

@@ -16,8 +16,9 @@ def run(cfg, ctx):
         return {"file": str(path)}
     files = []
     timeout = float((cfg.get("api") or {}).get("timeout", 20))
+    request_tracker = ctx.get("request_tracker")
     for ep in endpoints:
-        data = get_json(ep["url"], params=ep.get("params") or {}, timeout=timeout)
+        data = get_json(ep["url"], params=ep.get("params") or {}, timeout=timeout, request_tracker=request_tracker)
         path = outdir / f"{ep['name']}.json"
         io.write_json(path, data)
         files.append(str(path))
