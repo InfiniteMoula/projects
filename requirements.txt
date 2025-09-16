@@ -11,3 +11,5 @@ dnspython==2.6.1
 pdfminer.six==20231228
 tldextract==5.1.2
 psutil==5.9.8
+jinja2==3.1.4
+weasyprint==66.0
