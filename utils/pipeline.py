@@ -9,30 +9,61 @@ from typing import Callable, Iterable, Mapping, MutableMapping, Optional, Sequen
 LOGGER_NAME = "builder.pipeline"
 
 
-def configure_logging(verbose: bool = False) -> logging.Logger:
+def configure_logging(verbose: bool = False, debug: bool = False) -> logging.Logger:
     """Configure and return the pipeline logger.
 
     The console handler is initialised lazily so repeated calls only
     adjust the level. The returned logger does not propagate to avoid
     duplicate entries when embedding in other apps.
+    
+    Args:
+        verbose: Enable verbose (DEBUG level) logging with detailed information
+        debug: Enable debug mode (INFO level) with important debug information
     """
 
     logger = logging.getLogger(LOGGER_NAME)
-    level = logging.DEBUG if verbose else logging.INFO
+    
+    # Determine log level based on flags
+    if verbose:
+        level = logging.DEBUG  # Most detailed logging
+    elif debug:
+        level = logging.INFO   # Important debug info
+    else:
+        level = logging.WARNING  # Only warnings and errors
+    
     logger.setLevel(level)
     logger.propagate = False
     if not logger.handlers:
         handler = logging.StreamHandler()
         handler.setLevel(level)
-        formatter = logging.Formatter(
-            fmt="%(asctime)s %(levelname)s %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S",
-        )
+        # Enhanced formatter for debug/verbose modes
+        if verbose or debug:
+            formatter = logging.Formatter(
+                fmt="%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        else:
+            formatter = logging.Formatter(
+                fmt="%(asctime)s %(levelname)s %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
     else:
         for handler in logger.handlers:
             handler.setLevel(level)
+            # Update formatter for existing handlers
+            if verbose or debug:
+                formatter = logging.Formatter(
+                    fmt="%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s",
+                    datefmt="%Y-%m-%dT%H:%M:%S",
+                )
+            else:
+                formatter = logging.Formatter(
+                    fmt="%(asctime)s %(levelname)s %(message)s",
+                    datefmt="%Y-%m-%dT%H:%M:%S",
+                )
+            handler.setFormatter(formatter)
     return logger
 
 

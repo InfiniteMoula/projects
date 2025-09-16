@@ -150,7 +150,8 @@ python builder_cli.py run-profile [OPTIONS]
 - `--workers WORKERS`: Number of worker threads (default: 8)
 - `--json`: Output results in JSON format
 - `--resume`: Resume previous interrupted run
-- `--verbose`: Enable detailed logging
+- `--verbose`: Enable detailed logging with all process details
+- `--debug`: Enable debug mode with important debug information
 - `--max-ram-mb MAX_RAM`: RAM budget in MB (0 = unlimited)
 - `--explain`: Show execution plan without running
 
@@ -184,6 +185,108 @@ python builder_cli.py batch [OPTIONS]
 - `--dry-run`: Generate jobs without executing
 - `--continue-on-error`: Continue processing if some jobs fail
 - `--json`: Output results in JSON format
+- `--verbose`: Enable detailed logging with all process details  
+- `--debug`: Enable debug mode with important debug information
+
+## Debug and Verbose Modes
+
+The CLI provides two levels of enhanced logging to help with debugging and monitoring:
+
+### Debug Mode (`--debug`)
+Enables important debug information at crucial pipeline steps:
+- Step start/completion notifications with status
+- Pipeline configuration overview 
+- Budget and KPI status tracking
+- RAM usage monitoring
+- Error summaries and step results
+- Final pipeline statistics
+
+```bash
+python builder_cli.py run-profile \
+  --job jobs/my_job.yaml \
+  --input data/sirene.parquet \
+  --out out/debug_run \
+  --profile quick \
+  --debug
+```
+
+### Verbose Mode (`--verbose`) 
+Enables comprehensive detailed logging of all process details:
+- All debug mode information plus:
+- Detailed step configurations and context
+- Complete step output and results
+- Full job configuration details  
+- Complete KPI and budget breakdowns
+- Full pipeline execution summary
+- Enhanced log formatting with file/line numbers
+
+```bash
+python builder_cli.py run-profile \
+  --job jobs/my_job.yaml \
+  --input data/sirene.parquet \
+  --out out/verbose_run \
+  --profile standard \
+  --verbose
+```
+
+### Debug Mode Usage Examples
+
+**Basic debug run:**
+```bash
+python builder_cli.py run-profile \
+  --job jobs/experts_comptables.yaml \
+  --input data/sirene.parquet \
+  --out out/debug_test \
+  --profile quick \
+  --debug \
+  --sample 10
+```
+
+**Verbose batch processing:**
+```bash
+python builder_cli.py batch \
+  --naf 6920Z --naf 4329A \
+  --input data/sirene.parquet \
+  --output-dir out/verbose_batch \
+  --verbose \
+  --sample 50
+```
+
+**Debug mode with budget constraints:**
+```bash
+python builder_cli.py run-profile \
+  --job jobs/btp_idf.yaml \
+  --input data/sirene.parquet \
+  --out out/debug_budget \
+  --profile standard \
+  --debug \
+  --max-ram-mb 1024 \
+  --time-budget-min 15
+```
+
+### Log Output Examples
+
+**Debug mode output:**
+```
+2024-01-15T10:30:00 [INFO] builder.pipeline:532 - [DEBUG] Pipeline configuration:
+2024-01-15T10:30:00 [INFO] builder.pipeline:533 - [DEBUG] - Profile: quick
+2024-01-15T10:30:00 [INFO] builder.pipeline:534 - [DEBUG] - Total steps: 7
+2024-01-15T10:30:00 [INFO] builder.pipeline:535 - [DEBUG] - Steps: dumps.collect, api.collect, normalize.standardize, quality.checks, quality.dedupe, quality.score, package.export
+2024-01-15T10:30:01 [INFO] builder.pipeline:143 - [DEBUG] Starting step 'dumps.collect'
+2024-01-15T10:30:01 [INFO] builder.pipeline:148 - [DEBUG] Resolved step function: dumps.collect_dump.run
+```
+
+**Verbose mode output:**
+```
+2024-01-15T10:30:00 [DEBUG] builder.pipeline:538 - [VERBOSE] Job configuration: {
+  "niche": "experts_comptables",
+  "profile": "quick",
+  "filters": {"naf_include": ["6920Z"]},
+  ...
+}
+2024-01-15T10:30:01 [DEBUG] builder.pipeline:147 - [VERBOSE] Step configuration keys: ['niche', 'filters', 'profile']
+2024-01-15T10:30:01 [DEBUG] builder.pipeline:148 - [VERBOSE] Context keys: ['run_id', 'outdir', 'logs', 'dry_run']
+```
 
 ### 4. resume
 
@@ -862,8 +965,21 @@ python builder_cli.py run-profile \
   --input data/sirene.parquet \
   --out out/debug \
   --profile quick \
+  --debug \
+  --sample 5
+```
+
+### Verbose Mode
+
+Enable comprehensive detailed logging:
+
+```bash
+python builder_cli.py run-profile \
+  --job jobs/my_job.yaml \
+  --input data/sirene.parquet \
+  --out out/verbose \
+  --profile quick \
   --verbose \
-  --dry-run \
   --sample 5
 ```
 
