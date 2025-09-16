@@ -1,7 +1,5 @@
-
 """I/O helpers with pathlib-friendly APIs and safe writes."""
 from __future__ import annotations
-
 import csv
 import hashlib
 import json
@@ -20,7 +18,6 @@ class IoError(RuntimeError):
 
 def ensure_dir(path: os.PathLike[str] | str) -> Path:
     """Create a directory if needed and return it as a Path."""
-
     directory = Path(path)
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -32,7 +29,6 @@ def ensure_dir(path: os.PathLike[str] | str) -> Path:
 
 def atomic_write(path: os.PathLike[str] | str, data: bytes) -> Path:
     """Atomically write bytes to *path* using a temporary file."""
-
     target = Path(path)
     ensure_dir(target.parent)
     tmp_path: Path | None = None
@@ -55,7 +51,6 @@ def atomic_write(path: os.PathLike[str] | str, data: bytes) -> Path:
 
 def atomic_write_iter(path: os.PathLike[str] | str, chunks: Iterable[bytes]) -> Path:
     """Atomically write a stream of *chunks* to *path*."""
-
     target = Path(path)
     ensure_dir(target.parent)
     tmp_path: Path | None = None
@@ -121,9 +116,4 @@ def csv_writer(
         for row in rows:
             writer.writerow(list(row))
     return target
-
-
-def now_iso() -> str:
-    from datetime import datetime, timezone
-
     return datetime.now(timezone.utc).astimezone().isoformat()
