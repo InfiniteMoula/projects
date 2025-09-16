@@ -82,20 +82,20 @@ def write_text(path: os.PathLike[str] | str, content: str, *, encoding: str = "u
 
 
 def write_json(path: os.PathLike[str] | str, obj: object) -> Path:
-data = json.dumps(obj, ensure_ascii=False, indent=2)
-return write_text(path, data)
+    data = json.dumps(obj, ensure_ascii=False, indent=2)
+    return write_text(path, data)
 
 
 def log_json(path: os.PathLike[str] | str, obj: Mapping[str, object]) -> None:
-target = Path(path)
-ensure_dir(target.parent)
-line = json.dumps(obj, ensure_ascii=False)
-try:
-    with target.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
-except OSError as exc:
-    LOGGER.error("failed to append log entry to %s: %s", target, exc)
-    raise IoError(f"unable to append log entry to {target}") from exc
+    target = Path(path)
+    ensure_dir(target.parent)
+    line = json.dumps(obj, ensure_ascii=False)
+    try:
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as exc:
+        LOGGER.error("failed to append log entry to %s: %s", target, exc)
+        raise IoError(f"unable to append log entry to {target}") from exc
 
 
 def sha256_file(path: os.PathLike[str] | str) -> str:
