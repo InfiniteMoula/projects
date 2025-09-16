@@ -1,15 +1,218 @@
-﻿# FILE: parse/parse_jsonld.py
-import os, glob, json
+# FILE: parse/parse_jsonld.py
+import os
+import glob
+import json
+import re
 from bs4 import BeautifulSoup
 from utils import io
+
+EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+PHONE_REGEX = re.compile(r'(?:\+33|0)[1-9](?:[.\-\s]?\d{2}){4}')
+
 def run(cfg, ctx):
-    html_dir=os.path.join(ctx["outdir"],"http")
-    if not os.path.isdir(html_dir): return {"status":"SKIPPED","reason":"NO_HTML"}
-    out=os.path.join(ctx["outdir"],"jsonld"); io.ensure_dir(out); n=0
-    for p in glob.glob(os.path.join(html_dir,"*.html")):
-        s=open(p,encoding="utf-8",errors="ignore").read()
-        for t in BeautifulSoup(s,"lxml").select('script[type="application/ld+json"]'):
-            try: json.loads(t.string or ""); n+=1
-            except: pass
-    io.write_json(os.path.join(out,"extracted.json"), {"count":n})
-    return {"file":os.path.join(out,"extracted.json"),"count":n}
+    """Extract and parse JSON-LD structured data from HTML files."""
+    
+    # Check for HTML files in multiple directories
+    html_dirs = []
+    for dirname in ["http", "headless", "sitemaps"]:
+        dir_path = os.path.join(ctx["outdir"], dirname)
+        if os.path.isdir(dir_path):
+            html_dirs.append(dir_path)
+    
+    if not html_dirs:
+        return {"status": "SKIPPED", "reason": "NO_HTML"}
+    
+    out = os.path.join(ctx["outdir"], "jsonld")
+    io.ensure_dir(out)
+    
+    extracted_data = []
+    file_count = 0
+    jsonld_count = 0
+    
+    for html_dir in html_dirs:
+        for filepath in glob.glob(os.path.join(html_dir, "*.html")):
+            try:
+                file_count += 1
+                content = io.read_text(filepath, encoding="utf-8")
+                soup = BeautifulSoup(content, "lxml")
+                
+                filename = os.path.basename(filepath)
+                
+                for script_tag in soup.select('script[type="application/ld+json"]'):
+                    if script_tag.string:
+                        try:
+                            data = json.loads(script_tag.string)
+                            jsonld_count += 1
+                            
+                            # Extract useful information from JSON-LD
+                            extracted = _extract_from_jsonld(data, filename)
+                            if extracted:
+                                extracted_data.append(extracted)
+                                
+                        except json.JSONDecodeError:
+                            pass
+                            
+            except Exception as e:
+                if ctx.get("logger"):
+                    ctx["logger"].warning(f"Failed to parse {filepath}: {e}")
+                continue
+    
+    # Save extracted data
+    output_path = os.path.join(out, "extracted.json")
+    result_data = {
+        "data": extracted_data,
+        "stats": {
+            "files_processed": file_count,
+            "jsonld_found": jsonld_count,
+            "records_extracted": len(extracted_data)
+        }
+    }
+    
+    io.write_json(output_path, result_data)
+    
+    return {
+        "file": output_path,
+        "count": jsonld_count,
+        "extracted_records": len(extracted_data),
+        "status": "OK"
+    }
+
+def _extract_from_jsonld(data, source_file):
+    """Extract contact and business information from JSON-LD data."""
+    
+    result = {
+        "source_file": source_file,
+        "type": None,
+        "name": None,
+        "emails": [],
+        "phones": [],
+        "addresses": [],
+        "social_profiles": [],
+        "website": None,
+        "raw_data": data
+    }
+    
+    # Handle arrays of data
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                _extract_from_object(item, result)
+    elif isinstance(data, dict):
+        _extract_from_object(data, result)
+    
+    # Clean up and deduplicate
+    result["emails"] = list(set(result["emails"]))
+    result["phones"] = list(set(result["phones"]))
+    result["social_profiles"] = list(set(result["social_profiles"]))
+    
+    # Only return if we found useful contact data
+    if (result["emails"] or result["phones"] or result["addresses"] 
+        or result["website"] or result["name"]):
+        return result
+    
+    return None
+
+def _extract_from_object(obj, result):
+    """Extract information from a JSON-LD object."""
+    
+    if not isinstance(obj, dict):
+        return
+    
+    # Extract type
+    obj_type = obj.get("@type", "")
+    if obj_type and not result["type"]:
+        result["type"] = obj_type
+    
+    # Extract name
+    name_fields = ["name", "legalName", "alternateName"]
+    for field in name_fields:
+        if field in obj and not result["name"]:
+            result["name"] = obj[field]
+            break
+    
+    # Extract contact information
+    contact_fields = ["email", "contactPoint", "contact"]
+    for field in contact_fields:
+        if field in obj:
+            _extract_contact_info(obj[field], result)
+    
+    # Extract phone
+    phone_fields = ["telephone", "phone", "phoneNumber"]
+    for field in phone_fields:
+        if field in obj:
+            phone = obj[field]
+            if isinstance(phone, str):
+                result["phones"].append(phone)
+    
+    # Extract address
+    address_fields = ["address", "location"]
+    for field in address_fields:
+        if field in obj:
+            address = obj[field]
+            address_str = _format_address(address)
+            if address_str:
+                result["addresses"].append(address_str)
+    
+    # Extract website/URL
+    url_fields = ["url", "website", "sameAs"]
+    for field in url_fields:
+        if field in obj:
+            url = obj[field]
+            if isinstance(url, str) and url.startswith("http"):
+                if not result["website"]:
+                    result["website"] = url
+                elif "linkedin" in url.lower() or "twitter" in url.lower() or "facebook" in url.lower():
+                    result["social_profiles"].append(url)
+            elif isinstance(url, list):
+                for u in url:
+                    if isinstance(u, str) and u.startswith("http"):
+                        if not result["website"]:
+                            result["website"] = u
+                        elif any(social in u.lower() for social in ["linkedin", "twitter", "facebook", "instagram"]):
+                            result["social_profiles"].append(u)
+    
+    # Recursively process nested objects
+    for key, value in obj.items():
+        if isinstance(value, dict):
+            _extract_from_object(value, result)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _extract_from_object(item, result)
+
+def _extract_contact_info(contact_data, result):
+    """Extract contact information from various formats."""
+    
+    if isinstance(contact_data, str):
+        # Direct email/phone string
+        if "@" in contact_data:
+            result["emails"].append(contact_data)
+        elif PHONE_REGEX.match(contact_data):
+            result["phones"].append(contact_data)
+    elif isinstance(contact_data, dict):
+        # Structured contact info
+        if "email" in contact_data:
+            result["emails"].append(contact_data["email"])
+        if "telephone" in contact_data:
+            result["phones"].append(contact_data["telephone"])
+        if "phone" in contact_data:
+            result["phones"].append(contact_data["phone"])
+    elif isinstance(contact_data, list):
+        # Array of contact info
+        for item in contact_data:
+            _extract_contact_info(item, result)
+
+def _format_address(address_data):
+    """Format address data into a string."""
+    
+    if isinstance(address_data, str):
+        return address_data
+    elif isinstance(address_data, dict):
+        parts = []
+        address_fields = ["streetAddress", "addressLocality", "postalCode", "addressCountry"]
+        for field in address_fields:
+            if field in address_data:
+                parts.append(str(address_data[field]))
+        return ", ".join(parts) if parts else None
+    
+    return None
