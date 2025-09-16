@@ -1,3 +1,4 @@
+
 """I/O helpers with pathlib-friendly APIs and safe writes."""
 from __future__ import annotations
 
@@ -91,7 +92,8 @@ def log_json(path: os.PathLike[str] | str, obj: Mapping[str, object]) -> None:
     line = json.dumps(obj, ensure_ascii=False)
     try:
         with target.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+            handle.write(line + "
+")
     except OSError as exc:
         LOGGER.error("failed to append log entry to %s: %s", target, exc)
         raise IoError(f"unable to append log entry to {target}") from exc
