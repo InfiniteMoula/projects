@@ -264,28 +264,35 @@ python builder_cli.py run-profile \
   --time-budget-min 15
 ```
 
-### Log Output Examples
+### Debug vs Verbose vs Normal Modes
 
-**Debug mode output:**
+| Mode | Log Level | Output | Use Case |
+|------|-----------|---------|----------|
+| **Normal** (default) | WARNING | Errors and warnings only | Production runs |
+| **Debug** (`--debug`) | INFO | Important debug information | Troubleshooting and monitoring |
+| **Verbose** (`--verbose`) | DEBUG | All process details | Deep debugging and development |
+
+**Example outputs:**
+
+Normal mode:
 ```
-2024-01-15T10:30:00 [INFO] builder.pipeline:532 - [DEBUG] Pipeline configuration:
-2024-01-15T10:30:00 [INFO] builder.pipeline:533 - [DEBUG] - Profile: quick
-2024-01-15T10:30:00 [INFO] builder.pipeline:534 - [DEBUG] - Total steps: 7
-2024-01-15T10:30:00 [INFO] builder.pipeline:535 - [DEBUG] - Steps: dumps.collect, api.collect, normalize.standardize, quality.checks, quality.dedupe, quality.score, package.export
-2024-01-15T10:30:01 [INFO] builder.pipeline:143 - [DEBUG] Starting step 'dumps.collect'
-2024-01-15T10:30:01 [INFO] builder.pipeline:148 - [DEBUG] Resolved step function: dumps.collect_dump.run
+# Only shows warnings/errors
 ```
 
-**Verbose mode output:**
+Debug mode:
 ```
-2024-01-15T10:30:00 [DEBUG] builder.pipeline:538 - [VERBOSE] Job configuration: {
-  "niche": "experts_comptables",
-  "profile": "quick",
-  "filters": {"naf_include": ["6920Z"]},
-  ...
-}
-2024-01-15T10:30:01 [DEBUG] builder.pipeline:147 - [VERBOSE] Step configuration keys: ['niche', 'filters', 'profile']
-2024-01-15T10:30:01 [DEBUG] builder.pipeline:148 - [VERBOSE] Context keys: ['run_id', 'outdir', 'logs', 'dry_run']
+2025-01-15T10:30:00 [INFO] [DEBUG] Pipeline configuration:
+2025-01-15T10:30:00 [INFO] [DEBUG] - Profile: quick
+2025-01-15T10:30:00 [INFO] [DEBUG] - Total steps: 7
+2025-01-15T10:30:01 [INFO] [DEBUG] Starting step 'dumps.collect'
+2025-01-15T10:30:01 [INFO] [DEBUG] Step 'dumps.collect' completed with status: OK
+```
+
+Verbose mode:
+```
+2025-01-15T10:30:00 [DEBUG] [VERBOSE] Job configuration: { "niche": "test", ... }
+2025-01-15T10:30:01 [DEBUG] [VERBOSE] Step configuration keys: ['niche', 'filters']
+2025-01-15T10:30:01 [DEBUG] [VERBOSE] Complete step result: {"step": "dumps.collect", "status": "OK", ...}
 ```
 
 ### 4. resume
