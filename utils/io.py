@@ -81,6 +81,11 @@ def write_text(path: os.PathLike[str] | str, content: str, *, encoding: str = "u
     return atomic_write(path, content.encode(encoding))
 
 
+def read_text(path: os.PathLike[str] | str, *, encoding: str = "utf-8") -> str:
+    """Read text content from a file."""
+    return Path(path).read_text(encoding=encoding)
+
+
 def write_json(path: os.PathLike[str] | str, obj: object) -> Path:
     data = json.dumps(obj, ensure_ascii=False, indent=2)
     return write_text(path, data)
