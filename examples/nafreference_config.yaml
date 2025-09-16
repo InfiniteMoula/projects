@@ -1,0 +1,31 @@
+# Example configuration for NAF Reference Collection
+
+## Basic usage - collect all NAF codes
+nafreference:
+  source: "auto"  # Try INSEE API first, fallback to open data
+  timeout: 60
+
+## Filter by specific NAF code (e.g., agriculture sector)
+nafreference:
+  naf_code: "01"  # Agriculture, forestry and fishing
+  source: "fallback"  # Use open data source directly
+  timeout: 30
+
+## Available NAF code prefixes (examples):
+# 01 - Agriculture, forestry and fishing
+# 02 - Forestry and logging
+# 03 - Fishing and aquaculture
+# 05 - Mining of coal and lignite
+# 10 - Manufacture of food products
+# 41 - Construction of buildings
+# 62 - Computer programming, consultancy
+# 85 - Education
+
+## Output:
+# - Creates parquet file with NAF reference data
+# - Columns: code_naf, libelle
+# - Filtered by specified NAF code prefix if provided
+
+## Data sources:
+# 1. INSEE API (primary) - https://api.insee.fr/metadonnees/V1/codes/nafr2
+# 2. INSEE open data (fallback) - Excel files from insee.fr statistics

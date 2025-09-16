@@ -1,6 +1,5 @@
 """I/O helpers with pathlib-friendly APIs and safe writes."""
 from __future__ import annotations
-
 import csv
 import hashlib
 import json
@@ -117,13 +116,4 @@ def csv_writer(
         for row in rows:
             writer.writerow(list(row))
     return target
-
-
-def now_iso() -> str:
-    from datetime import datetime, timezone
-
     return datetime.now(timezone.utc).astimezone().isoformat()
-
-
-def read_text(path: os.PathLike[str] | str, *, encoding: str = "utf-8") -> str:
-    return Path(path).read_text(encoding=encoding)
