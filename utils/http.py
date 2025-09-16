@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping
+from typing import Iterable, Mapping, MutableMapping, Optional, Callable
 
 import httpx
 
@@ -24,6 +24,7 @@ def stream_download(
     headers: Mapping[str, str] | None = None,
     timeout: float = 60.0,
     resume: bool = True,
+    request_tracker: Optional[Callable[[int], None]] = None,
 ) -> Path:
     """Download *url* to *dest* using atomic writes and optional resume."""
 
@@ -35,6 +36,7 @@ def stream_download(
         request_headers.setdefault("Range", f"bytes={existing_size}-")
 
     def chunk_iter() -> Iterable[bytes]:
+        total_bytes = 0
         try:
             with httpx.stream(
                 "GET",
@@ -52,8 +54,17 @@ def stream_download(
                     LOGGER.info("server ignored range request for %s, restarting download", url)
                 for chunk in response.iter_bytes():
                     if chunk:
+                        total_bytes += len(chunk)
                         yield chunk
+                
+                # Track the request after completion
+                if request_tracker:
+                    request_tracker(total_bytes)
+                    
         except httpx.HTTPError as exc:
+            # Still track the request even on failure  
+            if request_tracker:
+                request_tracker(total_bytes)
             raise HttpError(f"download failed for {url}: {exc}") from exc
 
     return io.atomic_write_iter(target, chunk_iter())
@@ -64,11 +75,21 @@ def get_json(
     *,
     params: Mapping[str, object] | None = None,
     timeout: float = 20.0,
+    request_tracker: Optional[Callable[[int], None]] = None,
 ) -> object:
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url, params=params)
             response.raise_for_status()
+            
+            # Track the request
+            response_size = len(response.content) if response.content else 0
+            if request_tracker:
+                request_tracker(response_size)
+                
             return response.json()
     except httpx.HTTPError as exc:
+        # Still track the request even on failure
+        if request_tracker:
+            request_tracker(0)
         raise HttpError(f"GET {url} failed: {exc}") from exc
