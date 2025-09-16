@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de Qualité des Données - {{ dataset_id }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .metric-card {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .metric-label {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        .quality-bar {
+            background: #e9ecef;
+            border-radius: 10px;
+            height: 20px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        .quality-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+        .quality-excellent { background: #28a745; }
+        .quality-good { background: #ffc107; }
+        .quality-poor { background: #dc3545; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #f8f9fa;
+            font-weight: bold;
+        }
+        .section {
+            margin: 30px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .footer {
+            margin-top: 40px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Rapport de Qualité des Données</h1>
+        <p><strong>Dataset ID:</strong> {{ dataset_id }}</p>
+        <p><strong>Run ID:</strong> {{ run_id }}</p>
+        <p><strong>Date de génération:</strong> {{ generation_date }}</p>
+    </div>
+
+    <div class="section">
+        <h2>Métriques Principales</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value">{{ total_records | default('N/A') }}</div>
+                <div class="metric-label">Nombre total d'enregistrements</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ (quality_mean | round(2)) if quality_mean is not none else 'N/A' }}{% if quality_mean is not none %}%{% endif %}</div>
+                <div class="metric-label">Score de qualité moyen</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ (quality_p50 | round(2)) if quality_p50 is not none else 'N/A' }}{% if quality_p50 is not none %}%{% endif %}</div>
+                <div class="metric-label">Score de qualité médian</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ (quality_p90 | round(2)) if quality_p90 is not none else 'N/A' }}{% if quality_p90 is not none %}%{% endif %}</div>
+                <div class="metric-label">Score de qualité P90</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Distribution des Scores de Qualité</h2>
+        <div style="margin: 20px 0;">
+            <div style="margin-bottom: 10px;">
+                <strong>Score moyen: {{ (quality_mean | round(2)) if quality_mean is not none else 'N/A' }}{% if quality_mean is not none %}%{% endif %}</strong>
+                <div class="quality-bar">
+                    <div class="quality-fill {% if quality_mean and quality_mean >= 80 %}quality-excellent{% elif quality_mean and quality_mean >= 60 %}quality-good{% else %}quality-poor{% endif %}" 
+                         style="width: {{ quality_mean | default(0) }}%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Dictionnaire des Données</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Colonne</th>
+                    <th>Valeurs Non Nulles</th>
+                    <th>Taux de Complétude</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for column_info in data_dictionary %}
+                <tr>
+                    <td>{{ column_info.column }}</td>
+                    <td>{{ column_info.non_null }}</td>
+                    <td>{{ column_info.completeness_rate | round(1) }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Métadonnées Techniques</h2>
+        <table>
+            <tr>
+                <th>Fichier CSV</th>
+                <td>{{ csv_path | default('N/A') }}</td>
+            </tr>
+            <tr>
+                <th>Fichier Parquet</th>
+                <td>{{ parquet_path | default('N/A') }}</td>
+            </tr>
+            <tr>
+                <th>SHA256 CSV</th>
+                <td style="font-family: monospace; font-size: 12px;">{{ csv_sha256 | default('N/A') }}</td>
+            </tr>
+            <tr>
+                <th>SHA256 Parquet</th>
+                <td style="font-family: monospace; font-size: 12px;">{{ parquet_sha256 | default('N/A') }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Conformité et Gouvernance</h2>
+        <table>
+            <tr>
+                <th>Conformité Robots.txt</th>
+                <td>{{ '✓ Conforme' if robots_compliance else '✗ Non conforme' }}</td>
+            </tr>
+            <tr>
+                <th>Violations CGU détectées</th>
+                <td>{{ tos_breaches | length if tos_breaches else 0 }}</td>
+            </tr>
+            <tr>
+                <th>Données personnelles présentes</th>
+                <td>{{ '⚠ Oui' if pii_present else '✓ Non' }}</td>
+            </tr>
+            <tr>
+                <th>Anonymisation utilisée</th>
+                <td>{{ '✓ Oui' if anonymization_used else 'Non' }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="footer">
+        <p>Rapport généré automatiquement par le pipeline de traitement des données</p>
+        <p>Version du système: 1.0 | Date: {{ generation_date }}</p>
+    </div>
+</body>
+</html>

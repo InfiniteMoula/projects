@@ -116,4 +116,3 @@ def csv_writer(
         for row in rows:
             writer.writerow(list(row))
     return target
-    return datetime.now(timezone.utc).astimezone().isoformat()
