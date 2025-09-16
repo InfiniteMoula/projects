@@ -143,12 +143,26 @@ def _check_ram(ctx):
 def _run_step(step_name, cfg, context):
     logger = context.get("logger") or pipeline.get_logger()
     budget_tracker = context.get("budget_tracker")
+    verbose = context.get("verbose", False)
+    debug = context.get("debug", False)
+    
+    # Debug info: Step configuration and context
+    if debug:
+        logger.info(f"[DEBUG] Starting step '{step_name}'")
+        logger.info(f"[DEBUG] Step dependencies: {STEP_DEPENDENCIES.get(step_name, [])}")
+        if verbose:
+            logger.debug(f"[VERBOSE] Step configuration keys: {list(cfg.keys()) if cfg else 'None'}")
+            logger.debug(f"[VERBOSE] Context keys: {list(context.keys())}")
     
     # Check time budget before starting step
     if budget_tracker:
         try:
             budget_tracker.check_time_budget()
+            if debug:
+                logger.info(f"[DEBUG] Budget check passed for step '{step_name}'")
         except budget_middleware.BudgetExceededError as exc:
+            if debug:
+                logger.info(f"[DEBUG] Budget exceeded before step '{step_name}': {exc}")
             status = {
                 "step": step_name,
                 "status": "BUDGET_EXCEEDED",
@@ -160,10 +174,16 @@ def _run_step(step_name, cfg, context):
             raise RuntimeError(f"step {step_name} budget exceeded: {exc}")
     
     fn = pipeline.resolve_step(step_name, STEP_REGISTRY)
+    if debug:
+        logger.info(f"[DEBUG] Resolved step function: {fn.__module__}.{fn.__name__}")
+    
     pipeline.log_step_event(logger, step_name, "start")
     started = time.time()
     try:
         _check_ram(context)
+        if debug:
+            ram_info = psutil.Process().memory_info()
+            logger.info(f"[DEBUG] RAM usage before step: {ram_info.rss // (1024 * 1024)} MB")
         
         # Add budget tracker to context for steps to use
         step_context = context.copy()
@@ -171,12 +191,27 @@ def _run_step(step_name, cfg, context):
             step_context["budget_tracker"] = budget_tracker
             step_context["request_tracker"] = lambda size: budget_tracker.track_http_request(size)
         
+        if debug:
+            logger.info(f"[DEBUG] Executing step '{step_name}'...")
+        
         out = fn(cfg, step_context) or {}
+        
+        if debug:
+            logger.info(f"[DEBUG] Step '{step_name}' completed with status: {out.get('status', 'OK')}")
+            if verbose and out:
+                logger.debug(f"[VERBOSE] Step output: {out}")
+        
         _check_ram(context)
+        if debug:
+            ram_info = psutil.Process().memory_info()
+            logger.info(f"[DEBUG] RAM usage after step: {ram_info.rss // (1024 * 1024)} MB")
         
         # Check budgets after step completion
         if budget_tracker:
             budget_tracker.check_time_budget()
+            if debug:
+                budget_stats = budget_tracker.get_current_stats()
+                logger.info(f"[DEBUG] Budget stats after step: {budget_stats}")
             
         status = {
             "step": step_name,
@@ -190,6 +225,8 @@ def _run_step(step_name, cfg, context):
             status["budget_stats"] = budget_tracker.get_current_stats()
             
     except budget_middleware.BudgetExceededError as exc:
+        if debug:
+            logger.info(f"[DEBUG] Budget exceeded during step '{step_name}': {exc}")
         status = {
             "step": step_name,
             "status": "BUDGET_EXCEEDED", 
@@ -199,6 +236,10 @@ def _run_step(step_name, cfg, context):
         if budget_tracker:
             status["budget_stats"] = budget_tracker.get_current_stats()
     except Exception as exc:
+        if debug:
+            logger.info(f"[DEBUG] Step '{step_name}' failed with error: {exc}")
+        if verbose:
+            logger.debug(f"[VERBOSE] Full traceback: {traceback.format_exc()}")
         status = {
             "step": step_name,
             "status": "FAIL",
@@ -221,8 +262,11 @@ def _run_step(step_name, cfg, context):
         **extra,
     )
     io.log_json(context["logs"], status)
-    if context.get("verbose"):
-        logger.debug("step_result %s", json.dumps(status, ensure_ascii=False))
+    if verbose:
+        logger.debug(f"[VERBOSE] Complete step result for {step_name}: {json.dumps(status, ensure_ascii=False)}")
+    elif debug and status.get("error"):
+        logger.info(f"[DEBUG] Step '{step_name}' result: {status['status']} in {status['duration_s']}s")
+    
     if status["status"] not in ("OK", "SKIPPED", "WARN"):
         raise RuntimeError(f"step {step_name} failed")
     return status
@@ -260,6 +304,7 @@ def build_context(args, job):
         "resume": args.resume,
         "json": args.json,
         "verbose": args.verbose,
+        "debug": getattr(args, 'debug', False),
         "max_ram_mb": args.max_ram_mb,
     }
     
@@ -301,7 +346,7 @@ def explain(steps):
 
 def run_batch_jobs(args):
     """Process multiple NAF codes in batch mode."""
-    logger = pipeline.configure_logging(args.verbose)
+    logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
     
     # Setup directories
     jobs_dir = Path(args.jobs_dir).expanduser().resolve()
@@ -362,6 +407,8 @@ def run_batch_jobs(args):
             cmd_args.extend(["--max-ram-mb", str(args.max_ram_mb)])
         if args.verbose:
             cmd_args.append("--verbose")
+        if getattr(args, 'debug', False):
+            cmd_args.append("--debug")
         
         try:
             # Execute job
@@ -458,7 +505,10 @@ def main():
     common.add_argument("--workers", type=int, default=8)
     common.add_argument("--json", action="store_true")
     common.add_argument("--resume", action="store_true")
-    common.add_argument("--verbose", action="store_true")
+    common.add_argument("--verbose", action="store_true", 
+                        help="Enable verbose logging with all process details")
+    common.add_argument("--debug", action="store_true",
+                        help="Enable debug mode with important debug information")
     common.add_argument("--max-ram-mb", type=int, default=0)  # 0 = desactive
 
     run_step_parser = sub.add_parser("run-step", parents=[common])
@@ -489,7 +539,9 @@ def main():
     batch_parser.add_argument("--workers", type=int, default=8,
                              help="Number of workers")
     batch_parser.add_argument("--verbose", action="store_true",
-                             help="Verbose output")
+                             help="Enable verbose logging with all process details")
+    batch_parser.add_argument("--debug", action="store_true",
+                             help="Enable debug mode with important debug information")
     batch_parser.add_argument("--max-ram-mb", type=int, default=0,
                              help="Maximum RAM budget in MB (0 = unlimited)")
     batch_parser.add_argument("--continue-on-error", action="store_true",
@@ -518,7 +570,7 @@ def main():
     else:
         steps = []
 
-    logger = pipeline.configure_logging(args.verbose)
+    logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
 
     if args.cmd == "run-profile" and args.explain:
         explain(steps)
@@ -528,6 +580,18 @@ def main():
     ctx["logger"] = logger
 
     steps_sorted = topo_sorted(steps, logger)
+    
+    # Debug info: Pipeline overview
+    if ctx.get("debug"):
+        logger.info(f"[DEBUG] Pipeline configuration:")
+        logger.info(f"[DEBUG] - Profile: {getattr(args, 'profile', 'N/A')}")
+        logger.info(f"[DEBUG] - Total steps: {len(steps_sorted)}")
+        logger.info(f"[DEBUG] - Steps: {', '.join(steps_sorted)}")
+        logger.info(f"[DEBUG] - Output directory: {ctx['outdir']}")
+        logger.info(f"[DEBUG] - Run ID: {ctx['run_id']}")
+        if ctx.get("verbose"):
+            logger.debug(f"[VERBOSE] Job configuration: {json.dumps(job, indent=2, ensure_ascii=False)}")
+    
     results = []
 
     pipeline.log_step_event(
@@ -538,7 +602,11 @@ def main():
         total_steps=len(steps_sorted),
     )
     start_time = time.time()
+    
     for index, name in enumerate(steps_sorted, start=1):
+        if ctx.get("debug"):
+            logger.info(f"[DEBUG] Queuing step {index}/{len(steps_sorted)}: {name}")
+        
         pipeline.log_step_event(
             logger,
             name,
@@ -548,8 +616,17 @@ def main():
         )
         result = _run_step(name, job, ctx)
         results.append(result)
+        
+        if ctx.get("debug"):
+            logger.info(f"[DEBUG] Completed step {index}/{len(steps_sorted)}: {name} ({result['status']})")
 
     elapsed = round(time.time() - start_time, 1)
+    
+    if ctx.get("debug"):
+        logger.info(f"[DEBUG] Pipeline completed in {elapsed}s")
+        successful_steps = sum(1 for r in results if r['status'] in ('OK', 'SKIPPED', 'WARN'))
+        logger.info(f"[DEBUG] Step summary: {successful_steps}/{len(results)} successful")
+    
     pipeline.log_step_event(
         logger,
         "pipeline",
@@ -564,31 +641,46 @@ def main():
     final_kpis = None
     
     if kpi_calculator:
+        if ctx.get("debug"):
+            logger.info("[DEBUG] Calculating final KPIs...")
         try:
             final_kpis = kpi_calculator.calculate_final_kpis(ctx, results)
+            kpi_status = "OK" if final_kpis["all_kpis_met"] else "WARN"
+            
+            if ctx.get("debug"):
+                logger.info(f"[DEBUG] KPI calculation result: {kpi_status}")
+                logger.info(f"[DEBUG] KPIs met: {final_kpis['all_kpis_met']}")
+                if ctx.get("verbose"):
+                    logger.debug(f"[VERBOSE] KPI details: {json.dumps(final_kpis, indent=2, ensure_ascii=False)}")
+            
             pipeline.log_step_event(
                 logger,
                 "kpi_calculation",
                 "end",
-                status="OK" if final_kpis["all_kpis_met"] else "WARN",
+                status=kpi_status,
                 **{f"kpi_{k}": v for k, v in final_kpis["actual_kpis"].items()},
             )
             
             # Log KPI summary
-            kpi_status = {
+            kpi_status_obj = {
                 "step": "kpi_calculation",
-                "status": "OK" if final_kpis["all_kpis_met"] else "KPI_FAILED",
+                "status": kpi_status,
                 "out": final_kpis,
                 "duration_s": 0,
             }
-            io.log_json(ctx["logs"], kpi_status)
+            io.log_json(ctx["logs"], kpi_status_obj)
             
         except Exception as exc:
+            if ctx.get("debug"):
+                logger.info(f"[DEBUG] KPI calculation failed: {exc}")
             pipeline.log_step_event(logger, "kpi_calculation", "error", status="FAIL", error=str(exc))
     
     # Log final budget stats
     if budget_tracker:
         final_budget_stats = budget_tracker.get_current_stats()
+        if ctx.get("debug"):
+            logger.info(f"[DEBUG] Final budget statistics: {final_budget_stats}")
+        
         budget_status = {
             "step": "budget_summary",
             "status": "OK",
@@ -625,7 +717,26 @@ def main():
             stats = budget_tracker.get_current_stats()
             budget_msg = f" (req: {stats['http_requests']}/{stats['max_http_requests']}, bytes: {stats['http_bytes']}/{stats['max_http_bytes']})"
             
-        print(f"RUN {ctx['run_id']} DONE -> {ctx['outdir']} (elapsed={elapsed}s){kpi_msg}{budget_msg}")
+        success_msg = f"RUN {ctx['run_id']} DONE -> {ctx['outdir']} (elapsed={elapsed}s){kpi_msg}{budget_msg}"
+        print(success_msg)
+        
+        # Additional debug summary
+        if ctx.get("debug"):
+            failed_steps = [r for r in results if r['status'] not in ('OK', 'SKIPPED', 'WARN')]
+            if failed_steps:
+                logger.info(f"[DEBUG] Failed steps: {[s['step'] for s in failed_steps]}")
+            else:
+                logger.info("[DEBUG] All steps completed successfully")
+                
+        # Additional verbose summary  
+        if ctx.get("verbose"):
+            logger.debug(f"[VERBOSE] Complete run summary:")
+            for r in results:
+                logger.debug(f"[VERBOSE] - {r['step']}: {r['status']} ({r['duration_s']}s)")
+            if final_kpis:
+                logger.debug(f"[VERBOSE] Final KPIs: {final_kpis['actual_kpis']}")
+            if budget_tracker:
+                logger.debug(f"[VERBOSE] Final budget usage: {budget_tracker.get_current_stats()}")
 
 
 if __name__ == "__main__":
