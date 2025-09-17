@@ -1031,8 +1031,8 @@ tail -f out/my_run/logs/run_123abc.jsonl
 │   ├── budget_middleware.py # Budget and KPI tracking
 │   └── ...
 ├── dumps/                 # Data collection modules
-├── parse/                 # Data parsing modules  
-├── enrich/                # Data enrichment modules
+├── parse/                 # Data parsing modules (Python package)
+├── enrich/                # Data enrichment modules (Python package)
 ├── quality/               # Quality control modules
 ├── package/               # Export and reporting
 └── tests/                 # Test suite
