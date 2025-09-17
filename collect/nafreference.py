@@ -47,14 +47,34 @@ def _filter_naf_data(df: pd.DataFrame, naf_filter: Optional[str] = None) -> pd.D
     
     naf_col = naf_columns[0]  # Use first matching column
     
-    # Convert NAF filter and column to string and clean them
-    naf_filter_clean = str(naf_filter).strip()
+    # Clean the filter code (remove dots, spaces, convert to uppercase)
+    naf_filter_clean = str(naf_filter).strip().replace('.', '').replace(' ', '').upper()
     
-    # Filter the dataframe
-    mask = df[naf_col].astype(str).str.replace('.', '').str.replace(' ', '').str.startswith(naf_filter_clean.replace('.', ''))
+    # Clean the dataframe column for comparison
+    df_clean = df[naf_col].astype(str).str.replace('.', '').str.replace(' ', '').str.upper()
+    
+    # Apply smart matching for 4+ digit codes ending with letters (common business subcategories)
+    # This helps with codes like 6920Z (accounting) to also match 6920A, 6920B, etc.
+    # But we want to be more restrictive for agricultural/forestry codes (01.XXZ, 02.XXZ)
+    if (len(naf_filter_clean) >= 4 and 
+        naf_filter_clean and naf_filter_clean[-1].isalpha() and
+        naf_filter_clean[:-1].isdigit() and
+        not naf_filter_clean.startswith(('01', '02', '03'))):  # Exclude agriculture/forestry
+        
+        # For "6920Z", also match "6920" prefix to catch A, B, etc.
+        base_code = naf_filter_clean[:-1]  # "6920"
+        specific_code = naf_filter_clean   # "6920Z"
+        
+        # Create mask for both specific code and base category
+        mask = (df_clean.str.startswith(base_code) | 
+               df_clean.str.startswith(specific_code))
+    else:
+        # For other codes (numeric, short codes, or mixed formats), just do prefix matching
+        mask = df_clean.str.startswith(naf_filter_clean)
+    
     filtered_df = df[mask]
     
-    LOGGER.info(f"Filtered NAF data from {len(df)} to {len(filtered_df)} rows with filter '{naf_filter}'")
+    LOGGER.info(f"Filtered NAF data from {len(df)} to {len(filtered_df)} rows with filter '{naf_filter}' (cleaned: {naf_filter_clean})")
     return filtered_df
 
 
