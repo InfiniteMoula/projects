@@ -39,7 +39,7 @@ def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
             if common_cols:
                 # Keep only the new enrichment columns from Google Maps search
                 maps_cols = ['maps_business_names', 'maps_phone_numbers', 'maps_emails', 
-                           'maps_business_types', 'maps_websites', 'maps_rating', 
+                           'maps_business_types', 'maps_websites', 'maps_director_names', 'maps_rating', 
                            'maps_review_count', 'maps_search_status']
                 maps_cols = [col for col in maps_cols if col in maps_df.columns]
                 
@@ -202,6 +202,13 @@ def run(cfg, ctx):
         # Write output files
         csv_path = outdir_path / "dataset.csv"
         parquet_path = outdir_path / "dataset.parquet"
+        
+        # Ensure string columns remain as strings (important for postal codes, departments, etc.)
+        string_columns = ['siren', 'siret', 'code_postal', 'departement', 'forme_juridique', 
+                         'telephone_norm', 'naf', 'naf_code']
+        for col in string_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str)
         
         df.to_csv(csv_path, index=False, encoding="utf-8")
         pq.write_table(pa.Table.from_pandas(df), parquet_path, compression="snappy")

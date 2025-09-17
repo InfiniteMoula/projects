@@ -91,7 +91,8 @@ def _extract_business_info_from_maps(html_content: str) -> Dict[str, any]:
         'review_counts': [],
         'business_types': [],
         'hours': [],
-        'websites': []
+        'websites': [],
+        'director_names': []  # Add director names extraction
     }
     
     # Extract text content
@@ -160,6 +161,21 @@ def _extract_business_info_from_maps(html_content: str) -> Dict[str, any]:
     business_urls = [url for url in urls if not any(domain in url.lower() for domain in ['google.', 'maps.', 'youtube.', 'facebook.']) and '.' in url]
     result['websites'] = business_urls[:2]
     
+    # Extract director/manager names
+    # Look for common French business titles followed by names
+    director_patterns = [
+        r'(?:Directeur|Directrice|Gérant|Gérante|Président|Présidente|PDG|DG|Manager|Responsable)\s*:?\s*([A-Z][a-z]+\s+[A-Z][a-z]+)',
+        r'(?:M\.|Mme|Monsieur|Madame)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
+        r'Contact\s*:?\s*([A-Z][a-z]+\s+[A-Z][a-z]+)',
+        r'Propriétaire\s*:?\s*([A-Z][a-z]+\s+[A-Z][a-z]+)'
+    ]
+    
+    for pattern in director_patterns:
+        matches = re.findall(pattern, text_content, re.IGNORECASE)
+        for match in matches:
+            if len(match.split()) == 2:  # Ensure we have first name + last name
+                result['director_names'].append(match.strip())
+    
     # Remove duplicates and clean up
     for key in result:
         if isinstance(result[key], list):
@@ -178,6 +194,7 @@ def _search_google_maps(query: str, session: httpx.Client) -> Dict[str, any]:
         'review_counts': [],
         'business_types': [],
         'websites': [],
+        'director_names': [],  # Add director names
         'search_status': 'not_searched'
     }
     
@@ -221,7 +238,7 @@ def _merge_maps_results(search_results: List[Dict]) -> pd.DataFrame:
     df = pd.DataFrame(search_results)
     
     # Convert lists to strings for easier handling
-    list_columns = ['business_names', 'phone_numbers', 'emails', 'business_types', 'websites']
+    list_columns = ['business_names', 'phone_numbers', 'emails', 'business_types', 'websites', 'director_names']
     for col in list_columns:
         if col in df.columns:
             df[f'{col}_str'] = df[col].apply(lambda x: '; '.join(x) if isinstance(x, list) and x else '')
@@ -336,7 +353,7 @@ def run(cfg: dict, ctx: dict) -> dict:
         # Join with original data
         enriched_df = df.merge(
             search_df[['query', 'business_names_str', 'phone_numbers_str', 'emails_str', 
-                      'business_types_str', 'websites_str', 'rating', 'review_count', 'search_status']], 
+                      'business_types_str', 'websites_str', 'director_names_str', 'rating', 'review_count', 'search_status']], 
             left_on='maps_query', 
             right_on='query', 
             how='left'
@@ -352,6 +369,7 @@ def run(cfg: dict, ctx: dict) -> dict:
             'emails_str': 'maps_emails',
             'business_types_str': 'maps_business_types',
             'websites_str': 'maps_websites',
+            'director_names_str': 'maps_director_names',
             'rating': 'maps_rating',
             'review_count': 'maps_review_count',
             'search_status': 'maps_search_status'
@@ -360,7 +378,7 @@ def run(cfg: dict, ctx: dict) -> dict:
         enriched_df.rename(columns=column_mapping, inplace=True)
         
         # Fill missing values
-        string_cols = ['maps_business_names', 'maps_phone_numbers', 'maps_emails', 'maps_business_types', 'maps_websites']
+        string_cols = ['maps_business_names', 'maps_phone_numbers', 'maps_emails', 'maps_business_types', 'maps_websites', 'maps_director_names']
         for col in string_cols:
             if col in enriched_df.columns:
                 enriched_df[col] = enriched_df[col].fillna('')
