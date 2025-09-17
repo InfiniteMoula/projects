@@ -33,10 +33,10 @@ def iter_batches(
     """Yield pandas DataFrames for each record batch in a parquet dataset."""
 
     dataset = ds.dataset(str(path), format="parquet")
-    scanner = dataset.scanner(
-        columns=_filter_columns(dataset, columns),
-        batch_size=batch_size,
-    )
+    scanner_kwargs = {"columns": _filter_columns(dataset, columns)}
+    if batch_size is not None:
+        scanner_kwargs["batch_size"] = batch_size
+    scanner = dataset.scanner(**scanner_kwargs)
     for batch in scanner.to_batches():
         yield batch.to_pandas(types_mapper=pd.ArrowDtype)
 
