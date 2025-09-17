@@ -18,7 +18,13 @@ logs/
 
 # --- Datasets / Outputs ---
 output/
-test_output/
+out/
+data/
+*.csv
+*.parquet
+*.json
+*.xlsx
+*.tsv
 
 # --- Jupyter / VSCode ---
 .ipynb_checkpoints/
@@ -34,4 +40,3 @@ Thumbs.db
 *.tar
 *.gz
 *.7z
-*.parquet
