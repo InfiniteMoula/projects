@@ -55,7 +55,7 @@ def test_standardize_generates_summary_report(tmp_path, naf_code):
 
     assert result["status"] == "OK"
     assert result["rows"] == 1
-    assert pytest.approx(result["rows_per_s"], rel=0.1) >= 0.0
+    assert result["rows_per_s"] >= 0.0
 
     report_path = Path(result["report_path"])
     assert report_path.is_file()
