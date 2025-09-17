@@ -82,6 +82,36 @@ def test_calculate_quality_metrics(temp_outdir):
     assert 0 <= metrics['quality_mean'] <= 100
 
 
+def test_calculate_data_dictionary_with_empty_strings(temp_outdir):
+    """Test data dictionary calculation with empty strings."""
+    
+    # Create test data with empty strings and None values
+    test_data = {
+        'complete_field': ['value1', 'value2'],        # 100% complete
+        'partial_field': ['value1', ''],               # 50% complete (one empty string)
+        'empty_field': ['', ''],                       # 0% complete (all empty strings)
+        'null_field': ['value1', None],                # 50% complete (one null)
+        'mixed_field': ['value1', '   '],              # 50% complete (one valid, one whitespace-only)
+        'whitespace_field': ['   ', '  \t  '],         # 0% complete (all whitespace-only)
+        'numeric_field': [1.0, 2.0]                    # 100% complete (numeric)
+    }
+    df = pd.DataFrame(test_data)
+    
+    data_dict = exporter.calculate_data_dictionary(df)
+    
+    # Convert to dict for easier lookup
+    completeness_by_column = {item['column']: item['completeness_rate'] for item in data_dict}
+    
+    # Validate completeness rates
+    assert completeness_by_column['complete_field'] == 100.0  # All values present
+    assert completeness_by_column['partial_field'] == 50.0    # One empty string
+    assert completeness_by_column['empty_field'] == 0.0       # All empty strings
+    assert completeness_by_column['null_field'] == 50.0       # One null value
+    assert completeness_by_column['mixed_field'] == 50.0      # One valid, one whitespace-only
+    assert completeness_by_column['whitespace_field'] == 0.0  # All whitespace-only strings
+    assert completeness_by_column['numeric_field'] == 100.0   # Numeric fields work as before
+
+
 def test_enhanced_exporter_run(temp_outdir):
     """Test the complete enhanced exporter run."""
     
