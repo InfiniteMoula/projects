@@ -168,37 +168,34 @@ def run(cfg: dict, ctx: dict) -> dict:
                 if filtered_rows == 0:
                     continue
 
-                # Extract raison_sociale with fallback logic (MANDATORY)
-                raison_sociale = _to_str(_pick_first(pdf, ["denominationUniteLegale","denominationunitelegale"])).fillna("")
-                raison_sociale = raison_sociale.where(
-                    raison_sociale.str.len() > 0,
-                    _to_str(_pick_first(pdf, ["denominationUsuelleEtablissement","denominationusuelleetablissement"])).fillna("")
+                # Extract raison_sociale with fallback logic
+                raison_sociale = _to_str(_pick_first(pdf, ["denominationUniteLegale","denominationunitelegale"]))
+                # Fallback to denominationUsuelleEtablissement when denominationUniteLegale is empty/missing
+                fallback_raison_sociale = _to_str(_pick_first(pdf, ["denominationUsuelleEtablissement","denominationusuelleetablissement"]))
+                raison_sociale = raison_sociale.fillna("").where(
+                    raison_sociale.fillna("").str.len() > 0,
+                    fallback_raison_sociale
                 )
-                # Final fallback for mandatory raison_sociale
-                raison_sociale = raison_sociale.where(
-                    raison_sociale.str.len() > 0,
-                    "DENOMINATION NON RENSEIGNEE"
-                )
+                # Convert empty strings to null for better data quality
+                raison_sociale = raison_sociale.replace("", pd.NA)
 
-                # Extract enseigne with fallback logic (MANDATORY) 
-                enseigne = _to_str(_pick_first(pdf, ["enseigne1Etablissement","enseigne1etablissement"])).fillna("")
+                # Extract enseigne with fallback logic
+                enseigne = _to_str(_pick_first(pdf, ["enseigne1Etablissement","enseigne1etablissement"]))
                 # Fallback to raison_sociale if enseigne is missing
-                enseigne = enseigne.where(
-                    enseigne.str.len() > 0,
+                enseigne = enseigne.fillna("").where(
+                    enseigne.fillna("").str.len() > 0,
                     raison_sociale
                 )
+                # Convert empty strings to null for better data quality
+                enseigne = enseigne.replace("", pd.NA)
 
-                # Extract adresse with fallback logic (MANDATORY)
-                adresse_main = _to_str(_pick_first(pdf, ["adresseEtablissement","adresseetablissement"]))
-                
-                # Apply mandatory field logic with simple fallback
-                adresse = adresse_main.fillna("ADRESSE NON RENSEIGNEE")
-                adresse = adresse.where(adresse.str.len() > 0, "ADRESSE NON RENSEIGNEE")
+                # Extract adresse - preserve missing values as null instead of placeholder
+                adresse = _to_str(_pick_first(pdf, ["adresseEtablissement","adresseetablissement"]))
+                # Convert empty strings to null values for better data quality
+                adresse = adresse.replace("", pd.NA)
 
-                # Extract telephone with fallback (MANDATORY)
+                # Extract telephone - preserve missing values as null instead of placeholder
                 telephone_norm = _fr_tel_norm(_pick_first(pdf, ["telephone"]))
-                # Replace NA with placeholder for mandatory field
-                telephone_norm = telephone_norm.fillna("TELEPHONE NON RENSEIGNE")
 
                 res = pd.DataFrame({
                     "siren": _to_str(_pick_first(pdf, ["siren"])),
@@ -219,6 +216,11 @@ def run(cfg: dict, ctx: dict) -> dict:
                     "nom": _to_str(_pick_first(pdf, ["nomUniteLegale","nomunitelegale"])),
                     "prenom": _to_str(_pick_first(pdf, ["prenomsUniteLegale","prenomsunitelegale"])),
                 })
+
+                # Convert empty strings to null values for better data quality in optional fields
+                optional_fields = ["commune", "email", "siteweb", "nom", "prenom", "date_creation"]
+                for field in optional_fields:
+                    res[field] = res[field].replace("", pd.NA)
 
                 res["cp"] = res["cp"].str.extract(r"(\d{5})", expand=False).astype("string")
                 res["naf"] = res["naf"].astype("string")
