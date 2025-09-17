@@ -1,0 +1,61 @@
+niche: "naf_7021Z"
+
+filters:
+  naf_include: ["7021Z"]
+  active_only: false
+  # regions: ["75","92","93","94"]   # (optionnel) filtre par préfixe CP
+
+profile: "standard"
+steps_order: []               # laisse le CLI gérer l'ordre
+
+http:
+  seeds:
+    - "https://www.conseil-en-communication.fr"
+    - "https://www.relations-publiques.fr"
+    - "https://www.communication-corporate.fr"
+  per_domain_rps: 0.5
+
+sitemap:
+  domains:
+    - "conseil-en-communication.fr"
+    - "relations-publiques.fr"
+  allow_patterns: ["contact","mentions","about","equipe","team","avocats","experts","services","cabinet"]
+  max_urls: 500
+
+feeds:
+  urls: []
+pdf:
+  urls: []
+api:
+  endpoints: []
+
+enrich:
+  directory_csv: ""
+  email_formats_priority: ["contact@{d}","info@{d}","bonjour@{d}","cabinet@{d}","secretariat@{d}"]
+
+dedupe:
+  keys: ["siren","domain_root","best_email","telephone_norm"]
+  fuzzy: false
+
+scoring:
+  weights: {contactability:50, unicity:20, completeness:20, freshness:10}
+
+output:
+  dir: "out/naf_7021Z"
+  lang: "fr"
+
+kpi_targets:
+  min_quality_score: 80
+  max_dup_pct: 1.5
+  min_url_valid_pct: 85
+  min_domain_resolved_pct: 80
+  min_email_plausible_pct: 60
+  min_lines_per_s: 50
+
+budgets:
+  max_http_bytes: 15728640  # 15MB - increased for professional sites
+  max_http_requests: 750    # increased for professional directories
+  time_budget_min: 45       # increased time budget
+  ram_mb: 2048
+
+retention_days: 30
