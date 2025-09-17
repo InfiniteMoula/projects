@@ -141,10 +141,10 @@ def run(cfg: dict, ctx: dict) -> dict:
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
 
     candidates = [
-        outdir / "deduped.parquet",
         outdir / "enriched_email.parquet",
-        outdir / "enriched_domain.parquet",
-        outdir / "normalized.parquet",  # Add fallback to normalized data
+        outdir / "enriched_domain.parquet", 
+        outdir / "normalized.parquet",  # Prioritize normalized data since deduplication is removed
+        outdir / "deduped.parquet",     # Keep as fallback in case it exists from previous runs
     ]
     src = next((p for p in candidates if p.exists()), None)
     if not src:
