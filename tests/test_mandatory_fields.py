@@ -1,4 +1,4 @@
-"""Tests for mandatory field population in standardize step."""
+"""Tests for data preservation and fallback logic in standardize step."""
 
 import pandas as pd
 import pytest
@@ -10,8 +10,8 @@ pytest.importorskip("pyarrow")
 from normalize.standardize import run
 
 
-def test_mandatory_fields_always_populated():
-    """Test that mandatory fields (raison_sociale, enseigne, adresse, telephone_norm) are always populated."""
+def test_data_preservation_and_fallback_logic():
+    """Test that genuine data is preserved and fallback logic works without placeholder pollution."""
     
     # Create test data with various missing field scenarios
     df = pd.DataFrame({
@@ -28,13 +28,13 @@ def test_mandatory_fields_always_populated():
         "libelleCommuneEtablissement": ["Paris", "Lyon", "Marseille"],
         "codePostalEtablissement": ["75001", "69000", "13000"],
         
-        # Test adresse fallback
+        # Test adresse preservation vs null
         "adresseEtablissement": ["1 rue Test", "", ""],  # Missing for rows 1,2
         
         "activitePrincipaleEtablissement": ["62.01Z", "43.29A", "69.20Z"],
         "dateCreationEtablissement": ["2020-01-01", "2019-05-15", "2021-03-10"],
         
-        # Test telephone fallback
+        # Test telephone preservation vs null
         "telephone": ["0102030405", "", ""],  # Missing for rows 1,2
         
         "email": ["contact@a.com", "", ""],
@@ -70,41 +70,30 @@ def test_mandatory_fields_always_populated():
         assert result["status"] == "OK"
         assert result["rows"] == 3
         
-        # Read the output CSV to validate mandatory fields
+        # Read the output CSV to validate data preservation  
         csv_path = outdir / "normalized.csv"
         assert csv_path.exists()
         
-        output_df = pd.read_csv(csv_path)
+        # Read CSV with string dtype to preserve phone number formatting
+        output_df = pd.read_csv(csv_path, dtype={'telephone_norm': 'string'})
         
-        # Check each mandatory field is populated for all rows
-        mandatory_fields = ['raison_sociale', 'enseigne', 'adresse', 'telephone_norm']
-        
-        for field in mandatory_fields:
-            assert field in output_df.columns, f"Field {field} missing from output"
-            
-            for i, value in enumerate(output_df[field]):
-                # Convert to string and check it's not empty/null
-                str_value = str(value).strip()
-                assert str_value not in ['', 'nan', 'None', '<NA>'], \
-                    f"Row {i}: {field} is empty/null: '{value}'"
-                assert pd.notna(value), f"Row {i}: {field} is NaN: '{value}'"
-        
-        # Test specific fallback behaviors
+        # Check that core business fields with fallback logic are populated
         assert output_df.loc[0, 'raison_sociale'] == 'Company A'
         assert output_df.loc[1, 'raison_sociale'] == 'Fallback B'  # Falls back to denominationUsuelleEtablissement
-        assert output_df.loc[2, 'raison_sociale'] == 'DENOMINATION NON RENSEIGNEE'  # Final fallback
+        assert pd.isna(output_df.loc[2, 'raison_sociale'])  # No data available, should be null
         
         assert output_df.loc[0, 'enseigne'] == 'Enseigne A'
         assert output_df.loc[1, 'enseigne'] == 'Fallback B'  # Falls back to raison_sociale
-        assert output_df.loc[2, 'enseigne'] == 'DENOMINATION NON RENSEIGNEE'  # Falls back to raison_sociale
+        assert pd.isna(output_df.loc[2, 'enseigne'])  # Falls back to raison_sociale which is also null
         
+        # Check that optional fields preserve null state when missing
         assert output_df.loc[0, 'adresse'] == '1 rue Test'
-        assert output_df.loc[1, 'adresse'] == 'ADRESSE NON RENSEIGNEE'  # Fallback placeholder
-        assert output_df.loc[2, 'adresse'] == 'ADRESSE NON RENSEIGNEE'  # Fallback placeholder
+        assert pd.isna(output_df.loc[1, 'adresse'])  # Missing data preserved as null
+        assert pd.isna(output_df.loc[2, 'adresse'])  # Missing data preserved as null
         
         assert output_df.loc[0, 'telephone_norm'] == '+33102030405'
-        assert output_df.loc[1, 'telephone_norm'] == 'TELEPHONE NON RENSEIGNE'  # Fallback placeholder
-        assert output_df.loc[2, 'telephone_norm'] == 'TELEPHONE NON RENSEIGNE'  # Fallback placeholder
+        assert pd.isna(output_df.loc[1, 'telephone_norm'])  # Missing data preserved as null
+        assert pd.isna(output_df.loc[2, 'telephone_norm'])  # Missing data preserved as null
 
 
 def test_raison_sociale_fallback_priority():
@@ -132,7 +121,7 @@ def test_raison_sociale_fallback_priority():
         result = run(job, ctx)
         assert result["status"] == "OK"
         
-        output_df = pd.read_csv(outdir / "normalized.csv")
+        output_df = pd.read_csv(outdir / "normalized.csv", dtype={'telephone_norm': 'string'})
         
         # Row 0: Uses primary name
         assert output_df.loc[0, 'raison_sociale'] == 'Primary Name'
@@ -140,5 +129,5 @@ def test_raison_sociale_fallback_priority():
         # Row 1: Falls back to secondary name
         assert output_df.loc[1, 'raison_sociale'] == 'Fallback Name'
         
-        # Row 2: Uses final fallback
-        assert output_df.loc[2, 'raison_sociale'] == 'DENOMINATION NON RENSEIGNEE'
+        # Row 2: No data available, should be null instead of placeholder
+        assert pd.isna(output_df.loc[2, 'raison_sociale'])
