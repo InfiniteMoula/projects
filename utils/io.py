@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Iterable, Mapping
@@ -75,6 +76,16 @@ def atomic_write_iter(path: os.PathLike[str] | str, chunks: Iterable[bytes]) -> 
 
 
 
+def read_text(path: os.PathLike[str] | str, *, encoding: str = "utf-8") -> str:
+    """Read text content from *path*."""
+    target = Path(path)
+    try:
+        return target.read_text(encoding=encoding)
+    except (OSError, UnicodeDecodeError) as exc:
+        LOGGER.error("failed to read text from %s: %s", target, exc)
+        raise IoError(f"unable to read text from {target}") from exc
+
+
 def read_json(path: os.PathLike[str] | str, *, default: object | None = None, encoding: str = "utf-8") -> object:
     """Load JSON from *path* if it exists, otherwise return *default*."""
     target = Path(path)
@@ -131,3 +142,8 @@ def csv_writer(
         for row in rows:
             writer.writerow(list(row))
     return target
+
+
+def now_iso() -> str:
+    """Return current time in ISO 8601 format."""
+    return datetime.now(timezone.utc).astimezone().isoformat()
