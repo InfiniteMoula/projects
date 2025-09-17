@@ -20,51 +20,117 @@ PLACEHOLDER_VALUES = {
     "DENOMINATION NON RENSEIGNEE"
 }
 
-# on inclut les variantes CamelCase + snake_case courantes + UPPERCASE
-DEFAULT_USECOLS = [
-    "siren","siret","nic","SIREN","SIRET","NIC",
-    "denominationUniteLegale","denominationusuelleetablissement","denominationUsuelleEtablissement",
-    "DENOMINATIONUNITELEGALE","DENOMINATIONUSUELLEETABLISSEMENT","DENOMINATIONUSUELLEESTABLISSEMENT",
-    "enseigne1etablissement","enseigne1Etablissement","ENSEIGNE1ETABLISSEMENT",
-    "libellecommuneetablissement","libelleCommuneEtablissement","LIBELLECOMMUNEETABLISSEMENT",
-    "codepostaletablissement","codePostalEtablissement","CODEPOSTALETABLISSEMENT",
-    "adresseetablissement","adresseEtablissement","ADRESSEETABLISSEMENT",
-    "numeroVoieEtablissement","typeVoieEtablissement","libelleVoieEtablissement",
-    "NUMEROVOIEETABLISSEMENT","TYPEVOIEETABLISSEMENT","LIBELLEVOIEETABLISSEMENT",
-    "complementAdresseEtablissement","COMPLEMENTADRESSEETABLISSEMENT",
-    "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
-    "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE",
-    "dateCreationEtablissement","datecreationetablissement","DATECREATIONETABLISSEMENT",
-    "nomunitelegale","nomUniteLegale","prenomsunitelegale","prenomsUniteLegale",
-    "NOMUNITELEGALE","NOMUNITELEGALE","PRENOMSUNITELEGALE","PRENOMSUNITELEGALE",
-    "telephone","email","siteweb","TELEPHONE","EMAIL","SITEWEB",
-    "etatAdministratifEtablissement","etatadministratifetablissement","ETATADMINISTRATIFETABLISSEMENT",
-    "trancheEffectifsEtablissement","trancheeffectifsetablissement","TRANCHEEFFECTIFSETABLISSEMENT",
-    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale","TRANCHEEFFECTIFSUNITELEGALE",
-]
-
-ARROW_OUT_SCHEMA = pa.schema([
-    ("siren", pa.string()),
-    ("siret", pa.string()),
-    ("raison_sociale", pa.string()),
-    ("denomination", pa.string()),
-    ("enseigne", pa.string()),
-    ("commune", pa.string()),
-    ("ville", pa.string()),
-    ("cp", pa.string()),
-    ("code_postal", pa.string()),
-    ("adresse", pa.string()),
-    ("adresse_complete", pa.string()),
-    ("naf", pa.string()),
-    ("naf_code", pa.string()),
-    ("effectif", pa.string()),
-    ("date_creation", pa.string()),
-    ("telephone_norm", pa.string()),
-    ("email", pa.string()),
-    ("siteweb", pa.string()),
-    ("nom", pa.string()),
-    ("prenom", pa.string()),
-])
+# Column grouping patterns for merging similar columns
+COLUMN_GROUPS = {
+    # Core identifiers - keep separate as they are unique
+    'siren': ['siren', 'SIREN'],
+    'siret': ['siret', 'SIRET'], 
+    'nic': ['nic', 'NIC'],
+    
+    # Company names and denominations - merge similar variations
+    'denomination': [
+        'denominationUniteLegale', 'denominationunitelegale', 'DENOMINATIONUNITELEGALE',
+        'denomination', 'DENOMINATION', 'company_name', 'COMPANY_NAME',
+        'raison_sociale', 'RAISON_SOCIALE'
+    ],
+    'denomination_usuelle': [
+        'denominationUsuelleEtablissement', 'denominationusuelleetablissement', 'DENOMINATIONUSUELLEETABLISSEMENT'
+    ],
+    'enseigne': [
+        'enseigne1Etablissement', 'enseigne1etablissement', 'ENSEIGNE1ETABLISSEMENT',
+        'enseigne', 'ENSEIGNE', 'nom_commercial', 'NOM_COMMERCIAL'
+    ],
+    
+    # Geographic information
+    'commune': [
+        'libelleCommuneEtablissement', 'libellecommuneetablissement', 'LIBELLECOMMUNEETABLISSEMENT',
+        'commune', 'COMMUNE', 'ville', 'VILLE'
+    ],
+    'code_postal': [
+        'codePostalEtablissement', 'codepostaletablissement', 'CODEPOSTALETABLISSEMENT',
+        'code_postal', 'CODE_POSTAL', 'cp', 'CP'
+    ],
+    
+    # Address information - merge all address variations
+    'adresse': [
+        'adresseEtablissement', 'adresseetablissement', 'ADRESSEETABLISSEMENT',
+        'adresse', 'ADRESSE', 'address', 'ADDRESS',
+        'adresse_complete', 'ADRESSE_COMPLETE', 'adresse_ligne_1', 'ADRESSE_LIGNE_1'
+    ],
+    'numero_voie': [
+        'numeroVoieEtablissement', 'numerovoieetablissement', 'NUMEROVOIEETABLISSEMENT'
+    ],
+    'type_voie': [
+        'typeVoieEtablissement', 'typevoieetablissement', 'TYPEVOIEETABLISSEMENT'
+    ],
+    'libelle_voie': [
+        'libelleVoieEtablissement', 'libellevoieetablissement', 'LIBELLEVOIEETABLISSEMENT'
+    ],
+    'complement_adresse': [
+        'complementAdresseEtablissement', 'complementadresseetablissement', 'COMPLEMENTADRESSEETABLISSEMENT'
+    ],
+    
+    # Activity codes
+    'naf': [
+        'activitePrincipaleEtablissement', 'activiteprincipaleetablissement', 'ACTIVITEPRINCIPALEESTABLISSEMENT',
+        'activitePrincipaleUniteLegale', 'activiteprincipaleunitelegale', 'ACTIVITEPRINCIPALEUNITELLEGALE',
+        'naf', 'NAF', 'code_naf', 'CODE_NAF'
+    ],
+    
+    # Dates
+    'date_creation': [
+        'dateCreationEtablissement', 'datecreationetablissement', 'DATECREATIONETABLISSEMENT',
+        'date_creation', 'DATE_CREATION'
+    ],
+    
+    # Personal names - merge all name variations
+    'nom': [
+        'nomUniteLegale', 'nomunitelegale', 'NOMUNITELEGALE',
+        'nom', 'NOM', 'name', 'NAME', 'noms', 'NOMS'
+    ],
+    'prenom': [
+        'prenomsUniteLegale', 'prenomsunitelegale', 'PRENOMSUNITELEGALE',
+        'prenom', 'PRENOM', 'prenoms', 'PRENOMS'
+    ],
+    
+    # Contact information - merge all variations
+    'telephone': [
+        'telephone', 'TELEPHONE', 'phone', 'PHONE', 'tel', 'TEL'
+    ],
+    'telephone_mobile': [
+        'tel_mobile', 'TEL_MOBILE', 'mobile', 'MOBILE', 'portable', 'PORTABLE'
+    ],
+    'fax': [
+        'fax', 'FAX', 'telecopie', 'TELECOPIE'
+    ],
+    'email': [
+        'email', 'EMAIL', 'mail', 'MAIL', 'e_mail', 'E_MAIL'
+    ],
+    'website': [
+        'siteweb', 'SITEWEB', 'site_web', 'SITE_WEB', 'website', 'WEBSITE', 'url', 'URL'
+    ],
+    
+    # Administrative info
+    'etat_administratif': [
+        'etatAdministratifEtablissement', 'etatadministratifetablissement', 'ETATADMINISTRATIFETABLISSEMENT'
+    ],
+    'effectif': [
+        'trancheEffectifsEtablissement', 'trancheeffectifsetablissement', 'TRANCHEEFFECTIFSETABLISSEMENT',
+        'trancheEffectifsUniteLegale', 'trancheeffectifsunitelegale', 'TRANCHEEFFECTIFSUNITELEGALE',
+        'effectif', 'EFFECTIF', 'effectif_salarie', 'EFFECTIF_SALARIE', 'tranche_effectif', 'TRANCHE_EFFECTIF'
+    ],
+    
+    # Additional business information
+    'secteur_activite': [
+        'secteur_activite', 'SECTEUR_ACTIVITE', 'secteur', 'SECTEUR'
+    ],
+    'forme_juridique': [
+        'forme_juridique', 'FORME_JURIDIQUE', 'forme', 'FORME'
+    ],
+    'capital_social': [
+        'capital_social', 'CAPITAL_SOCIAL', 'capital', 'CAPITAL'
+    ]
+}
 
 # --- helpers ------------------------------------------------------------
 def _is_placeholder(s: pd.Series) -> pd.Series:
@@ -140,6 +206,58 @@ def _pick_first(df: pd.DataFrame, names: list[str]) -> pd.Series | None:
     return None
 
 
+def _merge_columns(df: pd.DataFrame, column_names: list[str], prefer_non_empty: bool = True) -> pd.Series:
+    """Merge multiple columns by combining their values, prioritizing non-empty values."""
+    result = pd.Series(pd.NA, index=df.index, dtype="string")
+    
+    for col_name in column_names:
+        if col_name in df.columns:
+            col_data = _to_str_filtered(df[col_name])
+            if prefer_non_empty:
+                # Fill empty values in result with values from this column
+                result = result.fillna(col_data)
+            else:
+                # Simple concatenation (could be used for other merge strategies)
+                result = result.combine_first(col_data)
+    
+    return result
+
+
+def _extract_all_columns(df: pd.DataFrame) -> dict:
+    """Extract and merge all available columns based on column groups."""
+    result = {}
+    used_columns = set()
+    
+    # Process each column group
+    for group_name, column_patterns in COLUMN_GROUPS.items():
+        available_cols = [col for col in column_patterns if col in df.columns]
+        if available_cols:
+            # Mark these columns as used
+            used_columns.update(available_cols)
+            # Merge the columns
+            result[group_name] = _merge_columns(df, available_cols)
+    
+    # Add any remaining columns that weren't matched to groups
+    remaining_cols = set(df.columns) - used_columns
+    for col in remaining_cols:
+        # Clean column name for output (lowercase, replace spaces/special chars)
+        clean_name = col.lower().replace(' ', '_').replace('-', '_').replace('.', '_')
+        # Avoid name conflicts
+        if clean_name in result:
+            clean_name = f"{clean_name}_extra"
+        result[clean_name] = _to_str_filtered(df[col])
+    
+    return result
+
+
+def _create_dynamic_schema(columns: dict) -> pa.Schema:
+    """Create a PyArrow schema based on the actual columns present."""
+    fields = []
+    for col_name in sorted(columns.keys()):
+        fields.append((col_name, pa.string()))
+    return pa.schema(fields)
+
+
 # --- main ---------------------------------------------------------------
 def run(cfg: dict, ctx: dict) -> dict:
     t0 = time.time()
@@ -155,7 +273,7 @@ def run(cfg: dict, ctx: dict) -> dict:
     naf_prefixes = tuple(filter(None, naf_include_raw))
     active_only = bool(filters.get("active_only", False))
 
-    usecols = job.get("standardize_usecols", DEFAULT_USECOLS)
+    # Remove usecols restriction to extract all columns
     batch_rows = int(job.get("standardize_batch_rows", 200_000))
 
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
@@ -174,191 +292,135 @@ def run(cfg: dict, ctx: dict) -> dict:
     filtered_rows_total = 0
     batches = 0
     logger = ctx.get("logger")
+    dynamic_schema = None
 
     try:
-        with ParquetBatchWriter(out_parquet, schema=ARROW_OUT_SCHEMA) as pq_writer, ArrowCsvWriter(out_csv) as csv_writer:
-            for pdf in iter_batches(input_path, columns=usecols, batch_size=batch_rows):
-                batches += 1
-                raw_rows = len(pdf)
-                raw_rows_total += raw_rows
-                if raw_rows == 0:
-                    continue
+        # Initialize writers without fixed schema - will be created dynamically
+        pq_writer = None
+        csv_writer = None
+        
+        for pdf in iter_batches(input_path, columns=None, batch_size=batch_rows):  # Extract all columns
+            batches += 1
+            raw_rows = len(pdf)
+            raw_rows_total += raw_rows
+            if raw_rows == 0:
+                continue
 
-                object_cols = [col for col in pdf.columns if str(pdf[col].dtype) == "object"]
-                if object_cols:
-                    pdf[object_cols] = pdf[object_cols].astype("string", copy=False)
+            object_cols = [col for col in pdf.columns if str(pdf[col].dtype) == "object"]
+            if object_cols:
+                pdf[object_cols] = pdf[object_cols].astype("string", copy=False)
 
-                naf_col_series = _pick_first(pdf, [
-                    "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
-                    "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
+            # Apply NAF filtering
+            naf_col_series = _pick_first(pdf, [
+                "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+                "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
+            ])
+
+            if naf_prefixes and naf_col_series is not None:
+                # Improved NAF filtering
+                naf_norm = _to_str(naf_col_series).str.replace(r"[\s\.]", "", regex=True).str.upper()
+                combined_mask = pd.Series([False] * len(pdf))
+                
+                for prefix in naf_prefixes:
+                    # Clean the prefix the same way as the data
+                    prefix_clean = prefix.replace(".", "").replace(" ", "").upper()
+                    
+                    # Apply smart matching for 4+ digit codes ending with letters
+                    if (len(prefix_clean) >= 4 and 
+                        prefix_clean and prefix_clean[-1].isalpha() and
+                        prefix_clean[:-1].isdigit() and 
+                        not prefix_clean.startswith(('01', '02', '03'))):  # Exclude agriculture/forestry
+                        
+                        base_code = prefix_clean[:-1]  # Remove letter suffix
+                        # Match either the specific code or the base category
+                        mask = (naf_norm.fillna("").str.startswith(base_code) | 
+                               naf_norm.fillna("").str.startswith(prefix_clean))
+                    else:
+                        # Standard prefix matching for other codes
+                        mask = naf_norm.fillna("").str.startswith(prefix_clean)
+                    
+                    combined_mask = combined_mask | mask
+                
+                pdf = pdf[combined_mask.fillna(False)]
+
+            if active_only:
+                state_series = _pick_first(pdf, [
+                    "etatAdministratifEtablissement","etatadministratifetablissement","ETATADMINISTRATIFETABLISSEMENT"
                 ])
-                naf_col = None
-                if naf_col_series is not None:
-                    # Find the actual column name that was matched
-                    for candidate in [
-                        "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
-                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
-                    ]:
-                        if candidate in pdf.columns:
-                            naf_col = candidate
-                            break
-                    # If no exact match, try case-insensitive
-                    if naf_col is None:
-                        df_columns_lower = {col.lower(): col for col in pdf.columns}
-                        for candidate in [
-                            "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
-                            "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
-                        ]:
-                            if candidate.lower() in df_columns_lower:
-                                naf_col = df_columns_lower[candidate.lower()]
-                                break
+                if state_series is not None:
+                    pdf = pdf[_to_str(state_series).eq("A")]
 
-                if naf_prefixes and naf_col:
-                    # Improved NAF filtering: handle subcategories more inclusively for business activity codes
-                    naf_norm = _to_str(pdf[naf_col]).str.replace(r"[\s\.]", "", regex=True).str.upper()
-                    combined_mask = pd.Series([False] * len(pdf))
-                    
-                    for prefix in naf_prefixes:
-                        # Clean the prefix the same way as the data
-                        prefix_clean = prefix.replace(".", "").replace(" ", "").upper()
-                        
-                        # Apply smart matching for 4+ digit codes ending with letters (common business subcategories)
-                        # This helps with codes like 6920Z (accounting) to also match 6920A, 6920B, etc.
-                        # But we want to be more restrictive for agricultural/forestry codes (01.XXZ, 02.XXZ)
-                        if (len(prefix_clean) >= 4 and 
-                            prefix_clean and prefix_clean[-1].isalpha() and
-                            prefix_clean[:-1].isdigit() and 
-                            not prefix_clean.startswith(('01', '02', '03'))):  # Exclude agriculture/forestry
-                            
-                            base_code = prefix_clean[:-1]  # Remove letter suffix
-                            # Match either the specific code or the base category
-                            mask = (naf_norm.fillna("").str.startswith(base_code) | 
-                                   naf_norm.fillna("").str.startswith(prefix_clean))
-                        else:
-                            # Standard prefix matching for other codes (numeric or short codes)
-                            mask = naf_norm.fillna("").str.startswith(prefix_clean)
-                        
-                        combined_mask = combined_mask | mask
-                    
-                    pdf = pdf[combined_mask.fillna(False)]
+            filtered_rows = len(pdf)
+            filtered_rows_total += filtered_rows
+            if filtered_rows == 0:
+                continue
 
-                if active_only:
-                    state_series = _pick_first(pdf, [
-                        "etatAdministratifEtablissement","etatadministratifetablissement","ETATADMINISTRATIFETABLISSEMENT"
-                    ])
-                    if state_series is not None:
-                        pdf = pdf[_to_str(state_series).eq("A")]
+            # Extract all columns using the comprehensive approach
+            extracted_data = _extract_all_columns(pdf)
+            
+            # Apply special processing for phone numbers
+            if 'telephone' in extracted_data:
+                extracted_data['telephone_norm'] = _fr_tel_norm(extracted_data['telephone'])
+            if 'telephone_mobile' in extracted_data:
+                extracted_data['telephone_mobile_norm'] = _fr_tel_norm(extracted_data['telephone_mobile'])
+            if 'fax' in extracted_data:
+                extracted_data['fax_norm'] = _fr_tel_norm(extracted_data['fax'])
+            
+            # Clean postal codes
+            if 'code_postal' in extracted_data:
+                extracted_data['code_postal'] = extracted_data['code_postal'].str.extract(r"(\d{5})", expand=False).astype("string")
+                # Add legacy alias
+                extracted_data['cp'] = extracted_data['code_postal']
+            
+            # Clean NAF codes
+            if 'naf' in extracted_data:
+                extracted_data['naf'] = extracted_data['naf'].str.replace(r"\s", "", regex=True).astype("string")
+                # Add legacy alias
+                extracted_data['naf_code'] = extracted_data['naf']
+            
+            # Add backward compatibility aliases
+            if 'denomination' in extracted_data:
+                extracted_data['raison_sociale'] = extracted_data['denomination']
+            if 'commune' in extracted_data:
+                extracted_data['ville'] = extracted_data['commune'] 
+            if 'adresse' in extracted_data:
+                extracted_data['adresse_complete'] = extracted_data['adresse']
+            if 'website' in extracted_data:
+                extracted_data['siteweb'] = extracted_data['website']
 
-                filtered_rows = len(pdf)
-                filtered_rows_total += filtered_rows
-                if filtered_rows == 0:
-                    continue
+            # Create DataFrame with all extracted data
+            res = pd.DataFrame(extracted_data)
+            
+            # Ensure we have at least the basic required columns for compatibility
+            required_cols = ['siren', 'siret']
+            for col in required_cols:
+                if col not in res.columns:
+                    res[col] = pd.Series(pd.NA, index=res.index, dtype="string")
 
-                # Extract raison_sociale with fallback logic and placeholder filtering
-                raison_sociale = _to_str_filtered(_pick_first(pdf, [
-                    "denominationUniteLegale","denominationunitelegale","DENOMINATIONUNITELEGALE"
-                ]))
-                # Fallback to denominationUsuelleEtablissement when denominationUniteLegale is empty/missing
-                fallback_raison_sociale = _to_str_filtered(_pick_first(pdf, [
-                    "denominationUsuelleEtablissement","denominationusuelleetablissement","DENOMINATIONUSUELLEETABLISSEMENT"
-                ]))
-                raison_sociale = raison_sociale.fillna("").where(
-                    raison_sociale.fillna("").str.len() > 0,
-                    fallback_raison_sociale
-                )
-                # Convert empty strings to null for better data quality
-                raison_sociale = raison_sociale.replace("", pd.NA)
+            rows_written = len(res)
+            total += rows_written
+            if rows_written == 0:
+                continue
 
-                # Extract enseigne with fallback logic
-                enseigne = _to_str_filtered(_pick_first(pdf, [
-                    "enseigne1Etablissement","enseigne1etablissement","ENSEIGNE1ETABLISSEMENT"
-                ]))
-                # Fallback to raison_sociale if enseigne is missing
-                enseigne = enseigne.fillna("").where(
-                    enseigne.fillna("").str.len() > 0,
-                    raison_sociale
-                )
-                # Convert empty strings to null for better data quality
-                enseigne = enseigne.replace("", pd.NA)
+            # Create or update dynamic schema
+            if dynamic_schema is None:
+                dynamic_schema = _create_dynamic_schema(extracted_data)
+                pq_writer = ParquetBatchWriter(out_parquet, schema=dynamic_schema)
+                csv_writer = ArrowCsvWriter(out_csv)
 
-                # Extract adresse - filter out placeholder values
-                adresse = _to_str_filtered(_pick_first(pdf, [
-                    "adresseEtablissement","adresseetablissement","ADRESSEETABLISSEMENT"
-                ]))
+            # Ensure DataFrame columns are in the same order as schema
+            schema_columns = [field.name for field in dynamic_schema]
+            res = res.reindex(columns=schema_columns, fill_value=pd.NA)
 
-                # Extract telephone - filter out placeholder values and normalize
-                telephone_norm = _fr_tel_norm(_pick_first(pdf, [
-                    "telephone","TELEPHONE"
-                ]))
+            table = pa.Table.from_pandas(res, preserve_index=False).cast(dynamic_schema)
+            pq_writer.write_table(table)
+            csv_writer.write_table(table)
 
-                # Extract effectif (employee count) - try multiple variations
-                effectif = _to_str_filtered(_pick_first(pdf, [
-                    "trancheEffectifsEtablissement","trancheeffectifsetablissement","TRANCHEEFFECTIFSETABLISSEMENT",
-                    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale","TRANCHEEFFECTIFSUNITELEGALE"
-                ]))
-                effectif = effectif if effectif is not None else pd.Series(pd.NA, index=pdf.index, dtype="string")
-
-                res = pd.DataFrame({
-                    "siren": _to_str(_pick_first(pdf, ["siren","SIREN"])),
-                    "siret": _to_str(_pick_first(pdf, ["siret","SIRET"])),
-                    "raison_sociale": raison_sociale,
-                    "denomination": raison_sociale,  # Alias for downstream compatibility
-                    "enseigne": enseigne,
-                    "commune": _to_str(_pick_first(pdf, [
-                        "libelleCommuneEtablissement","libellecommuneetablissement","LIBELLECOMMUNEETABLISSEMENT"
-                    ])),
-                    "ville": _to_str(_pick_first(pdf, [
-                        "libelleCommuneEtablissement","libellecommuneetablissement","LIBELLECOMMUNEETABLISSEMENT"
-                    ])),  # Alias for downstream compatibility
-                    "cp": _to_str(_pick_first(pdf, [
-                        "codePostalEtablissement","codepostaletablissement","CODEPOSTALETABLISSEMENT"
-                    ])),
-                    "code_postal": _to_str(_pick_first(pdf, [
-                        "codePostalEtablissement","codepostaletablissement","CODEPOSTALETABLISSEMENT"
-                    ])),  # Alias for downstream compatibility
-                    "adresse": adresse,
-                    "adresse_complete": adresse,  # Alias for downstream compatibility
-                    "naf": _to_str(_pick_first(pdf, [
-                        "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
-                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
-                    ])).str.replace(r"\s", "", regex=True),
-                    "naf_code": _to_str(_pick_first(pdf, [
-                        "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
-                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
-                    ])).str.replace(r"\s", "", regex=True),  # Alias for downstream compatibility
-                    "effectif": effectif,
-                    "date_creation": _to_str(_pick_first(pdf, [
-                        "dateCreationEtablissement","datecreationetablissement","DATECREATIONETABLISSEMENT"
-                    ])),
-                    "telephone_norm": telephone_norm,
-                    "email": _to_str_filtered(_pick_first(pdf, ["email","EMAIL"])),
-                    "siteweb": _to_str_filtered(_pick_first(pdf, ["siteweb","SITEWEB"])),
-                    "nom": _to_str_filtered(_pick_first(pdf, [
-                        "nomUniteLegale","nomunitelegale","NOMUNITELEGALE"
-                    ])),
-                    "prenom": _to_str_filtered(_pick_first(pdf, [
-                        "prenomsUniteLegale","prenomsunitelegale","PRENOMSUNITELEGALE"
-                    ])),
-                })
-
-                # Convert empty strings to null values for better data quality in optional fields
-                optional_fields = ["commune", "ville", "email", "siteweb", "nom", "prenom", "date_creation", "effectif"]
-                for field in optional_fields:
-                    res[field] = res[field].replace("", pd.NA)
-
-                res["cp"] = res["cp"].str.extract(r"(\d{5})", expand=False).astype("string")
-                res["code_postal"] = res["cp"]  # Keep both versions in sync
-                res["naf"] = res["naf"].astype("string")
-                res["naf_code"] = res["naf"]  # Keep both versions in sync
-
-                rows_written = len(res)
-                total += rows_written
-                if rows_written == 0:
-                    continue
-
-                table = pa.Table.from_pandas(res, preserve_index=False).cast(ARROW_OUT_SCHEMA)
-                pq_writer.write_table(table)
-                csv_writer.write_table(table)
+        # Close writers
+        if pq_writer:
+            pq_writer.close()
+        if csv_writer:
+            csv_writer.close()
 
         elapsed = time.time() - t0
         duration = round(elapsed, 3)
@@ -391,7 +453,7 @@ def run(cfg: dict, ctx: dict) -> dict:
             "filters": {
                 "active_only": active_only,
                 "naf_prefixes": list(naf_prefixes),
-                "usecols_count": len(usecols) if hasattr(usecols, "__len__") else None,
+                "comprehensive_extraction": True,  # Indicate new approach
             },
             "files": {
                 "parquet": str(out_parquet),
