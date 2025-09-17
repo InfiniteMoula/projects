@@ -18,6 +18,7 @@ logs/
 
 # --- Datasets / Outputs ---
 output/
+test_output/
 
 # --- Jupyter / VSCode ---
 .ipynb_checkpoints/
