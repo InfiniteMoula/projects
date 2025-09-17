@@ -67,12 +67,21 @@ def calculate_data_dictionary(df: pd.DataFrame) -> list[dict]:
     total_rows = len(df)
     
     for column in df.columns:
-        non_null_count = int(df[column].notna().sum())
-        completeness_rate = (non_null_count / total_rows * 100) if total_rows > 0 else 0
+        # Check for both non-null values AND non-empty strings
+        if df[column].dtype == 'object' or pd.api.types.is_string_dtype(df[column]):
+            # For string/object columns, exclude empty strings and whitespace-only strings
+            non_empty_mask = (df[column].notna() & 
+                             (df[column].astype(str).str.strip() != ""))
+            non_empty_count = int(non_empty_mask.sum())
+        else:
+            # For numeric and other types, just check for non-null
+            non_empty_count = int(df[column].notna().sum())
+        
+        completeness_rate = (non_empty_count / total_rows * 100) if total_rows > 0 else 0
         
         dictionary.append({
             "column": column,
-            "non_null": non_null_count,
+            "non_null": non_empty_count,
             "completeness_rate": completeness_rate
         })
     
