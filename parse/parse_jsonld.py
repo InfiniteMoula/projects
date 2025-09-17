@@ -3,6 +3,7 @@ import os
 import glob
 import json
 import re
+import logging
 from bs4 import BeautifulSoup
 from utils import io
 
@@ -39,9 +40,14 @@ def run(cfg, ctx):
                 filename = os.path.basename(filepath)
                 
                 for script_tag in soup.select('script[type="application/ld+json"]'):
-                    if script_tag.string:
+                    # Use get_text() as fallback for script_tag.string
+                    script_content = script_tag.string or script_tag.get_text()
+                    if script_content:
+                        # Strip HTML comments before JSON parsing
+                        script_content = re.sub(r'<!--.*?-->', '', script_content, flags=re.DOTALL).strip()
+                        
                         try:
-                            data = json.loads(script_tag.string)
+                            data = json.loads(script_content)
                             jsonld_count += 1
                             
                             # Extract useful information from JSON-LD
@@ -50,7 +56,23 @@ def run(cfg, ctx):
                                 extracted_data.append(extracted)
                                 
                         except json.JSONDecodeError:
-                            pass
+                            # Fallback: extract emails and phones from the script text
+                            emails = EMAIL_REGEX.findall(script_content)
+                            phones = PHONE_REGEX.findall(script_content)
+                            
+                            if emails or phones:
+                                fallback_record = {
+                                    "source_file": filename,
+                                    "type": "Fallback",
+                                    "name": None,
+                                    "emails": list(set(emails)) if emails else [],
+                                    "phones": list(set(phones)) if phones else [],
+                                    "addresses": [],
+                                    "social_profiles": [],
+                                    "website": None,
+                                    "raw_data": {"fallback_text": script_content}
+                                }
+                                extracted_data.append(fallback_record)
                             
             except Exception as e:
                 if ctx.get("logger"):
@@ -100,10 +122,19 @@ def _extract_from_jsonld(data, source_file):
     elif isinstance(data, dict):
         _extract_from_object(data, result)
     
-    # Clean up and deduplicate
-    result["emails"] = list(set(result["emails"]))
-    result["phones"] = list(set(result["phones"]))
-    result["social_profiles"] = list(set(result["social_profiles"]))
+    # Clean up and deduplicate while preserving order for addresses
+    result["emails"] = list(dict.fromkeys(result["emails"]))  # Preserve order while deduplicating
+    result["phones"] = list(dict.fromkeys(result["phones"]))  # Preserve order while deduplicating
+    result["social_profiles"] = list(dict.fromkeys(result["social_profiles"]))  # Preserve order while deduplicating
+    
+    # For addresses, preserve order and deduplicate
+    seen_addresses = set()
+    unique_addresses = []
+    for addr in result["addresses"]:
+        if addr not in seen_addresses:
+            seen_addresses.add(addr)
+            unique_addresses.append(addr)
+    result["addresses"] = unique_addresses
     
     # Only return if we found useful contact data
     if (result["emails"] or result["phones"] or result["addresses"] 
@@ -118,7 +149,7 @@ def _extract_from_object(obj, result):
     if not isinstance(obj, dict):
         return
     
-    # Extract type
+    # Extract type - handle arrays
     obj_type = obj.get("@type", "")
     if obj_type and not result["type"]:
         result["type"] = obj_type
@@ -143,15 +174,25 @@ def _extract_from_object(obj, result):
             phone = obj[field]
             if isinstance(phone, str):
                 result["phones"].append(phone)
+            elif isinstance(phone, list):
+                for p in phone:
+                    if isinstance(p, str):
+                        result["phones"].append(p)
     
-    # Extract address
+    # Extract address - improved handling for nested objects
     address_fields = ["address", "location"]
     for field in address_fields:
         if field in obj:
-            address = obj[field]
-            address_str = _format_address(address)
-            if address_str:
-                result["addresses"].append(address_str)
+            address_data = obj[field]
+            if isinstance(address_data, list):
+                for addr in address_data:
+                    address_str = _format_address(addr)
+                    if address_str:
+                        result["addresses"].append(address_str)
+            else:
+                address_str = _format_address(address_data)
+                if address_str:
+                    result["addresses"].append(address_str)
     
     # Extract website/URL
     url_fields = ["url", "website", "sameAs"]
@@ -208,11 +249,23 @@ def _format_address(address_data):
     if isinstance(address_data, str):
         return address_data
     elif isinstance(address_data, dict):
+        # Handle nested address objects (e.g., location.address)
+        if "address" in address_data and isinstance(address_data["address"], dict):
+            address_data = address_data["address"]
+        
         parts = []
         address_fields = ["streetAddress", "addressLocality", "postalCode", "addressCountry"]
         for field in address_fields:
-            if field in address_data:
-                parts.append(str(address_data[field]))
+            if field in address_data and address_data[field]:
+                parts.append(str(address_data[field]).strip())
         return ", ".join(parts) if parts else None
+    elif isinstance(address_data, list):
+        # Handle arrays of addresses
+        addresses = []
+        for addr in address_data:
+            formatted = _format_address(addr)
+            if formatted:
+                addresses.append(formatted)
+        return addresses[0] if addresses else None  # Return first valid address
     
     return None
