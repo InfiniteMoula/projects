@@ -18,7 +18,6 @@ logs/
 out/*/logs/
 
 # --- Datasets / Outputs ---
-out/
 output/
 *.csv
 *.parquet
