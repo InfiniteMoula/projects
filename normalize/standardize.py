@@ -20,24 +20,27 @@ PLACEHOLDER_VALUES = {
     "DENOMINATION NON RENSEIGNEE"
 }
 
-# on inclut les variantes CamelCase + snake_case courantes
+# on inclut les variantes CamelCase + snake_case courantes + UPPERCASE
 DEFAULT_USECOLS = [
-    "siren","siret","nic",
+    "siren","siret","nic","SIREN","SIRET","NIC",
     "denominationUniteLegale","denominationusuelleetablissement","denominationUsuelleEtablissement",
-    "enseigne1etablissement","enseigne1Etablissement",
-    "libellecommuneetablissement","libelleCommuneEtablissement",
-    "codepostaletablissement","codePostalEtablissement",
-    "adresseetablissement","adresseEtablissement",
+    "DENOMINATIONUNITELEGALE","DENOMINATIONUSUELLEETABLISSEMENT","DENOMINATIONUSUELLEESTABLISSEMENT",
+    "enseigne1etablissement","enseigne1Etablissement","ENSEIGNE1ETABLISSEMENT",
+    "libellecommuneetablissement","libelleCommuneEtablissement","LIBELLECOMMUNEETABLISSEMENT",
+    "codepostaletablissement","codePostalEtablissement","CODEPOSTALETABLISSEMENT",
+    "adresseetablissement","adresseEtablissement","ADRESSEETABLISSEMENT",
     "numeroVoieEtablissement","typeVoieEtablissement","libelleVoieEtablissement",
-    "complementAdresseEtablissement",
-    "activitePrincipaleEtablissement","activiteprincipaleetablissement",
-    "activitePrincipaleUniteLegale","activiteprincipaleunitelegale",
-    "dateCreationEtablissement","datecreationetablissement",
+    "NUMEROVOIEETABLISSEMENT","TYPEVOIEETABLISSEMENT","LIBELLEVOIEETABLISSEMENT",
+    "complementAdresseEtablissement","COMPLEMENTADRESSEETABLISSEMENT",
+    "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+    "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE",
+    "dateCreationEtablissement","datecreationetablissement","DATECREATIONETABLISSEMENT",
     "nomunitelegale","nomUniteLegale","prenomsunitelegale","prenomsUniteLegale",
-    "telephone","email","siteweb",
-    "etatAdministratifEtablissement","etatadministratifetablissement",
-    "trancheEffectifsEtablissement","trancheeffectifsetablissement",
-    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale",
+    "NOMUNITELEGALE","NOMUNITELEGALE","PRENOMSUNITELEGALE","PRENOMSUNITELEGALE",
+    "telephone","email","siteweb","TELEPHONE","EMAIL","SITEWEB",
+    "etatAdministratifEtablissement","etatadministratifetablissement","ETATADMINISTRATIFETABLISSEMENT",
+    "trancheEffectifsEtablissement","trancheeffectifsetablissement","TRANCHEEFFECTIFSETABLISSEMENT",
+    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale","TRANCHEEFFECTIFSUNITELEGALE",
 ]
 
 ARROW_OUT_SCHEMA = pa.schema([
@@ -79,10 +82,33 @@ def _to_str(s: pd.Series | None) -> pd.Series:
     return s
 
 
+def _to_str_filtered(s: pd.Series | None) -> pd.Series:
+    """Convert to string and filter out placeholder values."""
+    if s is None:
+        return pd.Series(pd.NA, dtype="string")
+    
+    str_series = _to_str(s)
+    # Replace placeholder values with NA
+    is_placeholder_mask = str_series.isin(PLACEHOLDER_VALUES)
+    str_series = str_series.where(~is_placeholder_mask, pd.NA)
+    
+    # Replace empty strings with NA
+    str_series = str_series.replace("", pd.NA)
+    
+    return str_series
+
+
 def _fr_tel_norm(s: pd.Series | None) -> pd.Series:
     if s is None:
         return pd.Series(pd.NA, dtype="string")
-    x = s.fillna("").astype("string", copy=False).str.replace(TEL_RE, "", regex=True)
+    
+    # First filter out placeholder values
+    str_series = _to_str(s)
+    is_placeholder_mask = str_series.isin(PLACEHOLDER_VALUES)
+    str_series = str_series.where(~is_placeholder_mask, "")
+    
+    # Now normalize phone numbers
+    x = str_series.fillna("").str.replace(TEL_RE, "", regex=True)
 
     def _fmt(v: str) -> str:
         if not v:
@@ -98,9 +124,19 @@ def _fr_tel_norm(s: pd.Series | None) -> pd.Series:
 
 
 def _pick_first(df: pd.DataFrame, names: list[str]) -> pd.Series | None:
+    """Pick the first available column from a list of names, supporting case-insensitive matching."""
+    # First try exact match (for performance)
     for name in names:
         if name in df.columns:
             return df[name]
+    
+    # If no exact match, try case-insensitive matching
+    df_columns_lower = {col.lower(): col for col in df.columns}
+    for name in names:
+        name_lower = name.lower()
+        if name_lower in df_columns_lower:
+            return df[df_columns_lower[name_lower]]
+    
     return None
 
 
@@ -152,13 +188,30 @@ def run(cfg: dict, ctx: dict) -> dict:
                 if object_cols:
                     pdf[object_cols] = pdf[object_cols].astype("string", copy=False)
 
-                naf_col = next(
-                    (cand for cand in [
-                        "activitePrincipaleEtablissement","activiteprincipaleetablissement",
-                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale"
-                    ] if cand in pdf.columns),
-                    None,
-                )
+                naf_col_series = _pick_first(pdf, [
+                    "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+                    "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
+                ])
+                naf_col = None
+                if naf_col_series is not None:
+                    # Find the actual column name that was matched
+                    for candidate in [
+                        "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
+                    ]:
+                        if candidate in pdf.columns:
+                            naf_col = candidate
+                            break
+                    # If no exact match, try case-insensitive
+                    if naf_col is None:
+                        df_columns_lower = {col.lower(): col for col in pdf.columns}
+                        for candidate in [
+                            "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+                            "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
+                        ]:
+                            if candidate.lower() in df_columns_lower:
+                                naf_col = df_columns_lower[candidate.lower()]
+                                break
 
                 if naf_prefixes and naf_col:
                     # Improved NAF filtering: handle subcategories more inclusively for business activity codes
@@ -190,21 +243,25 @@ def run(cfg: dict, ctx: dict) -> dict:
                     pdf = pdf[combined_mask.fillna(False)]
 
                 if active_only:
-                    state_col = next((c for c in [
-                        "etatAdministratifEtablissement","etatadministratifetablissement"
-                    ] if c in pdf.columns), None)
-                    if state_col:
-                        pdf = pdf[_to_str(pdf[state_col]).eq("A")]
+                    state_series = _pick_first(pdf, [
+                        "etatAdministratifEtablissement","etatadministratifetablissement","ETATADMINISTRATIFETABLISSEMENT"
+                    ])
+                    if state_series is not None:
+                        pdf = pdf[_to_str(state_series).eq("A")]
 
                 filtered_rows = len(pdf)
                 filtered_rows_total += filtered_rows
                 if filtered_rows == 0:
                     continue
 
-                # Extract raison_sociale with fallback logic
-                raison_sociale = _to_str(_pick_first(pdf, ["denominationUniteLegale","denominationunitelegale"]))
+                # Extract raison_sociale with fallback logic and placeholder filtering
+                raison_sociale = _to_str_filtered(_pick_first(pdf, [
+                    "denominationUniteLegale","denominationunitelegale","DENOMINATIONUNITELEGALE"
+                ]))
                 # Fallback to denominationUsuelleEtablissement when denominationUniteLegale is empty/missing
-                fallback_raison_sociale = _to_str(_pick_first(pdf, ["denominationUsuelleEtablissement","denominationusuelleetablissement"]))
+                fallback_raison_sociale = _to_str_filtered(_pick_first(pdf, [
+                    "denominationUsuelleEtablissement","denominationusuelleetablissement","DENOMINATIONUSUELLEETABLISSEMENT"
+                ]))
                 raison_sociale = raison_sociale.fillna("").where(
                     raison_sociale.fillna("").str.len() > 0,
                     fallback_raison_sociale
@@ -213,7 +270,9 @@ def run(cfg: dict, ctx: dict) -> dict:
                 raison_sociale = raison_sociale.replace("", pd.NA)
 
                 # Extract enseigne with fallback logic
-                enseigne = _to_str(_pick_first(pdf, ["enseigne1Etablissement","enseigne1etablissement"]))
+                enseigne = _to_str_filtered(_pick_first(pdf, [
+                    "enseigne1Etablissement","enseigne1etablissement","ENSEIGNE1ETABLISSEMENT"
+                ]))
                 # Fallback to raison_sociale if enseigne is missing
                 enseigne = enseigne.fillna("").where(
                     enseigne.fillna("").str.len() > 0,
@@ -222,49 +281,64 @@ def run(cfg: dict, ctx: dict) -> dict:
                 # Convert empty strings to null for better data quality
                 enseigne = enseigne.replace("", pd.NA)
 
-                # Extract adresse - preserve missing values as null instead of placeholder
-                adresse = _to_str(_pick_first(pdf, ["adresseEtablissement","adresseetablissement"]))
-                # Convert empty strings to null values for better data quality
-                adresse = adresse.replace("", pd.NA)
+                # Extract adresse - filter out placeholder values
+                adresse = _to_str_filtered(_pick_first(pdf, [
+                    "adresseEtablissement","adresseetablissement","ADRESSEETABLISSEMENT"
+                ]))
 
-                # Extract telephone - preserve missing values as null instead of placeholder
-                telephone_norm = _fr_tel_norm(_pick_first(pdf, ["telephone"]))
+                # Extract telephone - filter out placeholder values and normalize
+                telephone_norm = _fr_tel_norm(_pick_first(pdf, [
+                    "telephone","TELEPHONE"
+                ]))
 
                 # Extract effectif (employee count) - try multiple variations
-                effectif = _to_str(_pick_first(pdf, [
-                    "trancheEffectifsEtablissement","trancheeffectifsetablissement",
-                    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale"
+                effectif = _to_str_filtered(_pick_first(pdf, [
+                    "trancheEffectifsEtablissement","trancheeffectifsetablissement","TRANCHEEFFECTIFSETABLISSEMENT",
+                    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale","TRANCHEEFFECTIFSUNITELEGALE"
                 ]))
-                # Convert empty strings to null for better data quality
-                effectif = effectif.replace("", pd.NA) if effectif is not None else pd.Series(pd.NA, index=pdf.index, dtype="string")
+                effectif = effectif if effectif is not None else pd.Series(pd.NA, index=pdf.index, dtype="string")
 
                 res = pd.DataFrame({
-                    "siren": _to_str(_pick_first(pdf, ["siren"])),
-                    "siret": _to_str(_pick_first(pdf, ["siret"])),
+                    "siren": _to_str(_pick_first(pdf, ["siren","SIREN"])),
+                    "siret": _to_str(_pick_first(pdf, ["siret","SIRET"])),
                     "raison_sociale": raison_sociale,
                     "denomination": raison_sociale,  # Alias for downstream compatibility
                     "enseigne": enseigne,
-                    "commune": _to_str(_pick_first(pdf, ["libelleCommuneEtablissement","libellecommuneetablissement"])),
-                    "ville": _to_str(_pick_first(pdf, ["libelleCommuneEtablissement","libellecommuneetablissement"])),  # Alias for downstream compatibility
-                    "cp": _to_str(_pick_first(pdf, ["codePostalEtablissement","codepostaletablissement"])),
-                    "code_postal": _to_str(_pick_first(pdf, ["codePostalEtablissement","codepostaletablissement"])),  # Alias for downstream compatibility
+                    "commune": _to_str(_pick_first(pdf, [
+                        "libelleCommuneEtablissement","libellecommuneetablissement","LIBELLECOMMUNEETABLISSEMENT"
+                    ])),
+                    "ville": _to_str(_pick_first(pdf, [
+                        "libelleCommuneEtablissement","libellecommuneetablissement","LIBELLECOMMUNEETABLISSEMENT"
+                    ])),  # Alias for downstream compatibility
+                    "cp": _to_str(_pick_first(pdf, [
+                        "codePostalEtablissement","codepostaletablissement","CODEPOSTALETABLISSEMENT"
+                    ])),
+                    "code_postal": _to_str(_pick_first(pdf, [
+                        "codePostalEtablissement","codepostaletablissement","CODEPOSTALETABLISSEMENT"
+                    ])),  # Alias for downstream compatibility
                     "adresse": adresse,
                     "adresse_complete": adresse,  # Alias for downstream compatibility
                     "naf": _to_str(_pick_first(pdf, [
-                        "activitePrincipaleEtablissement","activiteprincipaleetablissement",
-                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale"
+                        "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
                     ])).str.replace(r"\s", "", regex=True),
                     "naf_code": _to_str(_pick_first(pdf, [
-                        "activitePrincipaleEtablissement","activiteprincipaleetablissement",
-                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale"
+                        "activitePrincipaleEtablissement","activiteprincipaleetablissement","ACTIVITEPRINCIPALEESTABLISSEMENT",
+                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale","ACTIVITEPRINCIPALEUNITELLEGALE"
                     ])).str.replace(r"\s", "", regex=True),  # Alias for downstream compatibility
                     "effectif": effectif,
-                    "date_creation": _to_str(_pick_first(pdf, ["dateCreationEtablissement","datecreationetablissement"])),
+                    "date_creation": _to_str(_pick_first(pdf, [
+                        "dateCreationEtablissement","datecreationetablissement","DATECREATIONETABLISSEMENT"
+                    ])),
                     "telephone_norm": telephone_norm,
-                    "email": _to_str(_pick_first(pdf, ["email"])),
-                    "siteweb": _to_str(_pick_first(pdf, ["siteweb"])),
-                    "nom": _to_str(_pick_first(pdf, ["nomUniteLegale","nomunitelegale"])),
-                    "prenom": _to_str(_pick_first(pdf, ["prenomsUniteLegale","prenomsunitelegale"])),
+                    "email": _to_str_filtered(_pick_first(pdf, ["email","EMAIL"])),
+                    "siteweb": _to_str_filtered(_pick_first(pdf, ["siteweb","SITEWEB"])),
+                    "nom": _to_str_filtered(_pick_first(pdf, [
+                        "nomUniteLegale","nomunitelegale","NOMUNITELEGALE"
+                    ])),
+                    "prenom": _to_str_filtered(_pick_first(pdf, [
+                        "prenomsUniteLegale","prenomsunitelegale","PRENOMSUNITELEGALE"
+                    ])),
                 })
 
                 # Convert empty strings to null values for better data quality in optional fields
