@@ -1,0 +1,6 @@
+siren,siret,raison_sociale,adresse,code_postal,commune,naf,telephone_norm,email,nom,prenom,etat_administratif
+123456789,12345678900001,Expert Comptable SA,"123 Avenue des Champs-Élysées, 75008 Paris",75008,Paris,6920Z,+33142123456,contact@expert.fr,Dupont,Jean,A
+987654321,98765432100001,Cabinet Conseil SARL,"456 Rue de la République, 69001 Lyon",69001,Lyon,6920Z,+33472345678,info@cabinet.com,Martin,Marie,A
+555666777,55566677700001,Avocat & Associés,"789 Boulevard de la Croisette, 06400 Cannes",06400,Cannes,6910Z,+33493789012,avocat@associes.fr,Durand,Pierre,A
+111222333,11122233300001,Notaire Martin,"15 Place Vendôme, 75001 Paris",75001,Paris,6910Z,,,Bernard,Sophie,A
+444555666,44455566600001,Architecte Design,"88 Cours Lafayette, 69003 Lyon",69003,Lyon,7111Z,+33478901234,contact@architecte.fr,Petit,Paul,A

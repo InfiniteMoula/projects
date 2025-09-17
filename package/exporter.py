@@ -17,6 +17,7 @@ def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
         outdir_path / "deduped.parquet",
         outdir_path / "enriched_email.parquet", 
         outdir_path / "enriched_domain.parquet",
+        outdir_path / "google_maps_enriched.parquet",  # Add Google Maps enrichment
         outdir_path / "address_enriched.parquet",  # Add address enrichment
         outdir_path / "normalized.parquet"
     ]
@@ -28,6 +29,27 @@ def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
     # Load main dataset
     df = pd.read_parquet(source_path)
     
+    # Try to merge with Google Maps enrichment data if not already included
+    google_maps_path = outdir_path / "google_maps_enriched.parquet"
+    if google_maps_path.exists() and source_path != google_maps_path:
+        try:
+            maps_df = pd.read_parquet(google_maps_path)
+            # Merge on common columns (typically siren/siret)
+            common_cols = [col for col in ['siren', 'siret'] if col in df.columns and col in maps_df.columns]
+            if common_cols:
+                # Keep only the new enrichment columns from Google Maps search
+                maps_cols = ['maps_business_names', 'maps_phone_numbers', 'maps_emails', 
+                           'maps_business_types', 'maps_websites', 'maps_rating', 
+                           'maps_review_count', 'maps_search_status']
+                maps_cols = [col for col in maps_cols if col in maps_df.columns]
+                
+                if maps_cols:
+                    merge_df = maps_df[common_cols + maps_cols]
+                    df = df.merge(merge_df, on=common_cols, how='left')
+                    print(f"Merged Google Maps enrichment data with {len(maps_cols)} new columns")
+        except Exception as e:
+            print(f"Warning: Could not merge Google Maps enrichment data: {e}")
+
     # Try to merge with address enrichment data if not already included
     address_path = outdir_path / "address_enriched.parquet"
     if address_path.exists() and source_path != address_path:

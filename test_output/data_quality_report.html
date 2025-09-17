@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de Qualité des Données - 75227d94a33382cd13d2337c8b235171d03908a6</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .metric-card {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .metric-label {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        .quality-bar {
+            background: #e9ecef;
+            border-radius: 10px;
+            height: 20px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        .quality-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+        .quality-excellent { background: #28a745; }
+        .quality-good { background: #ffc107; }
+        .quality-poor { background: #dc3545; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #f8f9fa;
+            font-weight: bold;
+        }
+        .section {
+            margin: 30px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .footer {
+            margin-top: 40px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Rapport de Qualité des Données</h1>
+        <p><strong>Dataset ID:</strong> 75227d94a33382cd13d2337c8b235171d03908a6</p>
+        <p><strong>Run ID:</strong> test_google_maps</p>
+        <p><strong>Date de génération:</strong> 2025-09-17T22:30:01.928821+00:00</p>
+    </div>
+
+    <div class="section">
+        <h2>Métriques Principales</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value">5</div>
+                <div class="metric-label">Nombre total d'enregistrements</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">N/A</div>
+                <div class="metric-label">Score de qualité moyen</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">N/A</div>
+                <div class="metric-label">Score de qualité médian</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">N/A</div>
+                <div class="metric-label">Score de qualité P90</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Distribution des Scores de Qualité</h2>
+        <div style="margin: 20px 0;">
+            <div style="margin-bottom: 10px;">
+                <strong>Score moyen: N/A</strong>
+                <div class="quality-bar">
+                    <div class="quality-fill quality-poor" 
+                         style="width: None%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Dictionnaire des Données</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Colonne</th>
+                    <th>Valeurs Non Nulles</th>
+                    <th>Taux de Complétude</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td>siren</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>siret</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>raison_sociale</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>adresse</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>code_postal</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>commune</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>naf</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>telephone_norm</td>
+                    <td>4</td>
+                    <td>80.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>email</td>
+                    <td>4</td>
+                    <td>80.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>nom</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>prenom</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>etat_administratif</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_business_names</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_phone_numbers</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_emails</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_business_types</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_websites</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_rating</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_review_count</td>
+                    <td>0</td>
+                    <td>0.0%</td>
+                </tr>
+                
+                <tr>
+                    <td>maps_search_status</td>
+                    <td>5</td>
+                    <td>100.0%</td>
+                </tr>
+                
+            </tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Métadonnées Techniques</h2>
+        <table>
+            <tr>
+                <th>Fichier CSV</th>
+                <td>dataset.csv</td>
+            </tr>
+            <tr>
+                <th>Fichier Parquet</th>
+                <td>dataset.parquet</td>
+            </tr>
+            <tr>
+                <th>SHA256 CSV</th>
+                <td style="font-family: monospace; font-size: 12px;">c72bcf0f7bc42b58ddbbb0734b7f303a9710a7b72e949769d433136e22218085</td>
+            </tr>
+            <tr>
+                <th>SHA256 Parquet</th>
+                <td style="font-family: monospace; font-size: 12px;">7be854e4b04a188277f6266ea01ea8655b18cec3500f9551b2072e13c8bb9ac6</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Conformité et Gouvernance</h2>
+        <table>
+            <tr>
+                <th>Conformité Robots.txt</th>
+                <td>✓ Conforme</td>
+            </tr>
+            <tr>
+                <th>Violations CGU détectées</th>
+                <td>0</td>
+            </tr>
+            <tr>
+                <th>Données personnelles présentes</th>
+                <td>✓ Non</td>
+            </tr>
+            <tr>
+                <th>Anonymisation utilisée</th>
+                <td>Non</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="footer">
+        <p>Rapport généré automatiquement par le pipeline de traitement des données</p>
+        <p>Version du système: 1.0 | Date: 2025-09-17T22:30:01.928821+00:00</p>
+    </div>
+</body>
+</html>
