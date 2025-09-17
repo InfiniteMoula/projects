@@ -36,17 +36,25 @@ DEFAULT_USECOLS = [
     "nomunitelegale","nomUniteLegale","prenomsunitelegale","prenomsUniteLegale",
     "telephone","email","siteweb",
     "etatAdministratifEtablissement","etatadministratifetablissement",
+    "trancheEffectifsEtablissement","trancheeffectifsetablissement",
+    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale",
 ]
 
 ARROW_OUT_SCHEMA = pa.schema([
     ("siren", pa.string()),
     ("siret", pa.string()),
     ("raison_sociale", pa.string()),
+    ("denomination", pa.string()),
     ("enseigne", pa.string()),
     ("commune", pa.string()),
+    ("ville", pa.string()),
     ("cp", pa.string()),
+    ("code_postal", pa.string()),
     ("adresse", pa.string()),
+    ("adresse_complete", pa.string()),
     ("naf", pa.string()),
+    ("naf_code", pa.string()),
+    ("effectif", pa.string()),
     ("date_creation", pa.string()),
     ("telephone_norm", pa.string()),
     ("email", pa.string()),
@@ -222,18 +230,35 @@ def run(cfg: dict, ctx: dict) -> dict:
                 # Extract telephone - preserve missing values as null instead of placeholder
                 telephone_norm = _fr_tel_norm(_pick_first(pdf, ["telephone"]))
 
+                # Extract effectif (employee count) - try multiple variations
+                effectif = _to_str(_pick_first(pdf, [
+                    "trancheEffectifsEtablissement","trancheeffectifsetablissement",
+                    "trancheEffectifsUniteLegale","trancheeffectifsunitelegale"
+                ]))
+                # Convert empty strings to null for better data quality
+                effectif = effectif.replace("", pd.NA) if effectif is not None else pd.Series(pd.NA, index=pdf.index, dtype="string")
+
                 res = pd.DataFrame({
                     "siren": _to_str(_pick_first(pdf, ["siren"])),
                     "siret": _to_str(_pick_first(pdf, ["siret"])),
                     "raison_sociale": raison_sociale,
+                    "denomination": raison_sociale,  # Alias for downstream compatibility
                     "enseigne": enseigne,
                     "commune": _to_str(_pick_first(pdf, ["libelleCommuneEtablissement","libellecommuneetablissement"])),
+                    "ville": _to_str(_pick_first(pdf, ["libelleCommuneEtablissement","libellecommuneetablissement"])),  # Alias for downstream compatibility
                     "cp": _to_str(_pick_first(pdf, ["codePostalEtablissement","codepostaletablissement"])),
+                    "code_postal": _to_str(_pick_first(pdf, ["codePostalEtablissement","codepostaletablissement"])),  # Alias for downstream compatibility
                     "adresse": adresse,
+                    "adresse_complete": adresse,  # Alias for downstream compatibility
                     "naf": _to_str(_pick_first(pdf, [
                         "activitePrincipaleEtablissement","activiteprincipaleetablissement",
                         "activitePrincipaleUniteLegale","activiteprincipaleunitelegale"
                     ])).str.replace(r"\s", "", regex=True),
+                    "naf_code": _to_str(_pick_first(pdf, [
+                        "activitePrincipaleEtablissement","activiteprincipaleetablissement",
+                        "activitePrincipaleUniteLegale","activiteprincipaleunitelegale"
+                    ])).str.replace(r"\s", "", regex=True),  # Alias for downstream compatibility
+                    "effectif": effectif,
                     "date_creation": _to_str(_pick_first(pdf, ["dateCreationEtablissement","datecreationetablissement"])),
                     "telephone_norm": telephone_norm,
                     "email": _to_str(_pick_first(pdf, ["email"])),
@@ -243,12 +268,14 @@ def run(cfg: dict, ctx: dict) -> dict:
                 })
 
                 # Convert empty strings to null values for better data quality in optional fields
-                optional_fields = ["commune", "email", "siteweb", "nom", "prenom", "date_creation"]
+                optional_fields = ["commune", "ville", "email", "siteweb", "nom", "prenom", "date_creation", "effectif"]
                 for field in optional_fields:
                     res[field] = res[field].replace("", pd.NA)
 
                 res["cp"] = res["cp"].str.extract(r"(\d{5})", expand=False).astype("string")
+                res["code_postal"] = res["cp"]  # Keep both versions in sync
                 res["naf"] = res["naf"].astype("string")
+                res["naf_code"] = res["naf"]  # Keep both versions in sync
 
                 rows_written = len(res)
                 total += rows_written

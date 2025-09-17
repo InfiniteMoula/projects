@@ -144,6 +144,7 @@ def run(cfg: dict, ctx: dict) -> dict:
         outdir / "deduped.parquet",
         outdir / "enriched_email.parquet",
         outdir / "enriched_domain.parquet",
+        outdir / "normalized.parquet",  # Add fallback to normalized data
     ]
     src = next((p for p in candidates if p.exists()), None)
     if not src:
