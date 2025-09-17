@@ -33,6 +33,50 @@ def test_filter_naf_data():
     assert specific['code_naf'].iloc[0] == '02.10'
 
 
+def test_improved_subcategory_filtering():
+    """Test that the improved filtering correctly handles subcategories (fixes 99.77% drop rate issue)."""
+    # Test data mimicking the accounting sector issue
+    df = pd.DataFrame({
+        'code_naf': [
+            '6920Z',    # Main accounting activities
+            '6920A',    # Accounting subcategory A (should be included)
+            '6920B',    # Accounting subcategory B (should be included)
+            '69.20Z',   # With dot notation (should be included)
+            '69.20A',   # With dot notation, subcategory A (should be included)
+            '6910Z',    # Legal activities (should be excluded)
+            '01.11Z',   # Agriculture (should be excluded)
+        ],
+        'libelle': [
+            'Activités comptables',
+            'Activités comptables - cat A', 
+            'Activités comptables - cat B',
+            'Activités comptables (dot)',
+            'Activités comptables - cat A (dot)',
+            'Activités juridiques',
+            'Agriculture',
+        ]
+    })
+    
+    # Test the filter that was causing 99.77% drop rate
+    filtered = _filter_naf_data(df, '6920Z')
+    
+    # Should now capture all accounting subcategories, not just exact matches
+    assert len(filtered) == 5, f"Expected 5 accounting codes, got {len(filtered)}"
+    
+    # Verify specific codes are included
+    codes = set(filtered['code_naf'].tolist())
+    expected = {'6920Z', '6920A', '6920B', '69.20Z', '69.20A'}
+    assert codes == expected, f"Expected {expected}, got {codes}"
+    
+    # Verify unrelated codes are excluded
+    assert '6910Z' not in codes
+    assert '01.11Z' not in codes
+    
+    # Verify significant improvement in drop rate
+    drop_rate = ((len(df) - len(filtered)) / len(df) * 100)
+    assert drop_rate < 50, f"Drop rate {drop_rate:.1f}% should be much less than 99.77%"
+
+
 def test_dry_run():
     """Test dry run functionality."""
     with tempfile.TemporaryDirectory() as tmpdir:

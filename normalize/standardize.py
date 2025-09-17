@@ -106,7 +106,8 @@ def run(cfg: dict, ctx: dict) -> dict:
 
     job = ctx.get("job", {}) or {}
     filters = (job.get("filters") or {})
-    naf_include_raw = [x.replace(".", "").replace(" ", "").lower() for x in (filters.get("naf_include") or [])]
+    # Keep original case and just clean spaces/dots for better matching
+    naf_include_raw = [x.replace(".", "").replace(" ", "") for x in (filters.get("naf_include") or [])]
     naf_prefixes = tuple(filter(None, naf_include_raw))
     active_only = bool(filters.get("active_only", False))
 
@@ -152,9 +153,33 @@ def run(cfg: dict, ctx: dict) -> dict:
                 )
 
                 if naf_prefixes and naf_col:
-                    naf_norm = _to_str(pdf[naf_col]).str.replace(r"[\s\.]", "", regex=True).str.lower()
-                    mask = naf_norm.fillna("").str.startswith(naf_prefixes)
-                    pdf = pdf[mask.fillna(False)]
+                    # Improved NAF filtering: handle subcategories more inclusively for business activity codes
+                    naf_norm = _to_str(pdf[naf_col]).str.replace(r"[\s\.]", "", regex=True).str.upper()
+                    combined_mask = pd.Series([False] * len(pdf))
+                    
+                    for prefix in naf_prefixes:
+                        # Clean the prefix the same way as the data
+                        prefix_clean = prefix.replace(".", "").replace(" ", "").upper()
+                        
+                        # Apply smart matching for 4+ digit codes ending with letters (common business subcategories)
+                        # This helps with codes like 6920Z (accounting) to also match 6920A, 6920B, etc.
+                        # But we want to be more restrictive for agricultural/forestry codes (01.XXZ, 02.XXZ)
+                        if (len(prefix_clean) >= 4 and 
+                            prefix_clean and prefix_clean[-1].isalpha() and
+                            prefix_clean[:-1].isdigit() and 
+                            not prefix_clean.startswith(('01', '02', '03'))):  # Exclude agriculture/forestry
+                            
+                            base_code = prefix_clean[:-1]  # Remove letter suffix
+                            # Match either the specific code or the base category
+                            mask = (naf_norm.fillna("").str.startswith(base_code) | 
+                                   naf_norm.fillna("").str.startswith(prefix_clean))
+                        else:
+                            # Standard prefix matching for other codes (numeric or short codes)
+                            mask = naf_norm.fillna("").str.startswith(prefix_clean)
+                        
+                        combined_mask = combined_mask | mask
+                    
+                    pdf = pdf[combined_mask.fillna(False)]
 
                 if active_only:
                     state_col = next((c for c in [
