@@ -12,6 +12,14 @@ from utils.parquet import ArrowCsvWriter, ParquetBatchWriter, iter_batches
 
 # --- config -------------------------------------------------------------
 TEL_RE = re.compile(r"\D+")
+
+# Placeholder values that should be treated as missing data
+PLACEHOLDER_VALUES = {
+    "TELEPHONE NON RENSEIGNE",
+    "ADRESSE NON RENSEIGNEE", 
+    "DENOMINATION NON RENSEIGNEE"
+}
+
 # on inclut les variantes CamelCase + snake_case courantes
 DEFAULT_USECOLS = [
     "siren","siret","nic",
@@ -48,6 +56,13 @@ ARROW_OUT_SCHEMA = pa.schema([
 ])
 
 # --- helpers ------------------------------------------------------------
+def _is_placeholder(s: pd.Series) -> pd.Series:
+    """Check if values in a Series are placeholder values that should be treated as missing data."""
+    if s is None:
+        return pd.Series(False, dtype=bool)
+    return s.astype("string").isin(PLACEHOLDER_VALUES)
+
+
 def _to_str(s: pd.Series | None) -> pd.Series:
     if s is None:
         return pd.Series(pd.NA, dtype="string")

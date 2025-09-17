@@ -10,6 +10,13 @@ from utils.parquet import ParquetBatchWriter, iter_batches
 
 E164_FR = re.compile(r"^\+33\d{9}$")
 
+# Placeholder values that should be treated as missing/invalid data
+PLACEHOLDER_VALUES = {
+    "TELEPHONE NON RENSEIGNE",
+    "ADRESSE NON RENSEIGNEE", 
+    "DENOMINATION NON RENSEIGNEE"
+}
+
 
 def _as_str(s: pd.Series) -> pd.Series:
     return s.astype("string")
@@ -40,7 +47,11 @@ def run(cfg, ctx):
                 if "telephone_norm" not in pdf.columns:
                     pdf["telephone_norm"] = pd.NA
                 tel = _as_str(pdf["telephone_norm"]).fillna("")
-                pdf["phone_valid"] = tel.str.match(E164_FR).astype("boolean")
+                
+                # Check if phone is valid E164 format AND not a placeholder value
+                is_e164_format = tel.str.match(E164_FR)
+                is_placeholder = tel.isin(PLACEHOLDER_VALUES)
+                pdf["phone_valid"] = (is_e164_format & ~is_placeholder).astype("boolean")
                 table = pa.Table.from_pandas(pdf, preserve_index=False)
                 writer.write_table(table)
                 total += len(pdf)
