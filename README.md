@@ -23,7 +23,7 @@ A comprehensive data scraping and enrichment system designed to collect, process
 
 - **Multi-source data collection**: Web scraping, API calls, RSS feeds, PDF extraction
 - **Intelligent enrichment**: Email discovery, domain validation, phone normalization
-- **Quality control**: Deduplication, scoring, validation checks
+- **Quality control**: Scoring, validation checks
 - **Flexible profiles**: Quick, standard, and deep processing modes
 - **Budget management**: Control resource usage (time, RAM, HTTP requests)
 - **Batch processing**: Process multiple NAF codes efficiently
@@ -319,7 +319,6 @@ steps: [
   "api.collect", 
   "normalize.standardize",
   "quality.checks",
-  "quality.dedupe",
   "quality.score",
   "package.export"
 ]
@@ -345,7 +344,6 @@ steps: [
   "enrich.email",
   "enrich.phone",
   "quality.checks",
-  "quality.dedupe", 
   "quality.score",
   "package.export"
 ]
@@ -375,7 +373,6 @@ steps: [
   "enrich.email",
   "enrich.phone",
   "quality.checks",
-  "quality.dedupe",
   "quality.score", 
   "package.export"
 ]
@@ -589,30 +586,18 @@ The system is built as a modular pipeline with discrete steps. Each step can be 
 **Output**: Quality metrics and validation results
 **Dependencies**: `normalize.standardize`
 
-#### 18. quality.dedupe
-**Purpose**: Remove duplicate records with comprehensive analysis
-**Input**: Quality-checked dataset
-**Output**: Deduplicated dataset with detailed duplicate analysis
-**Configuration**: `dedupe.keys`, `dedupe.fuzzy`
-**Dependencies**: `enrich.email`, `normalize.standardize`
-
-**Enhanced Features**:
-- Detailed duplicate pattern analysis by key combination
-- Data completeness validation for each deduplication key
-- Intelligent handling of empty values to reduce false positives
-- Comprehensive logging for debugging high duplicate rates
-- Validation warnings for suspicious deduplication patterns
-
-#### 19. quality.score
+#### 18. quality.score
 **Purpose**: Calculate quality scores for each record
-**Input**: Deduplicated dataset
+**Input**: Enriched or normalized dataset
 **Output**: Dataset with quality scores
 **Configuration**: `scoring.weights`
-**Dependencies**: `quality.dedupe`
+**Dependencies**: `normalize.standardize`
+
+**Note**: Deduplication has been removed from the pipeline to preserve more data. Quality scoring now works directly with enriched or normalized data.
 
 ### Export Step
 
-#### 20. package.export
+#### 19. package.export
 **Purpose**: Generate final outputs and reports
 **Input**: Scored dataset
 **Output**: CSV, Parquet, HTML/PDF reports, metadata
@@ -909,29 +894,7 @@ python builder_cli.py resume \
 
 ### Common Issues
 
-#### 1. High Deduplication Rates
-**Problem**: Unexpectedly high number of duplicates removed (e.g., 94,882 → 50,997 records)
-
-**Causes**:
-- Poor data completeness causing false duplicate matches
-- Inappropriate deduplication keys for the dataset
-- Empty values being treated as duplicates
-
-**Solutions**:
-- Review deduplication logs for detailed analysis
-- Check data completeness percentages in duplicate analysis output
-- Examine top duplicate patterns to identify problematic combinations
-- Consider adjusting deduplication keys in job configuration
-- Use debug mode (`--debug`) to see detailed duplicate analysis
-
-**Debug Information Available**:
-```
-INFO: Starting deduplication analysis for 94882 records using keys: ['siren', 'domain_root', 'best_email']
-WARN: High duplicate rate for keys siren: 65.2% (52431 of 80342 records)
-WARN: Low data completeness for key 'best_email': 23.4% (22201 of 94882 records)
-```
-
-#### 2. Memory Issues
+#### 1. Memory Issues
 **Problem**: Process killed due to high memory usage
 
 **Solutions**:

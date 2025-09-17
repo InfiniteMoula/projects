@@ -61,7 +61,7 @@ STEP_DEPENDENCIES = {
     "enrich.phone": {"enrich.email"},
     "quality.checks": {"normalize.standardize"},
     "quality.dedupe": {"enrich.email", "normalize.standardize"},
-    "quality.score": {"quality.dedupe"},
+    "quality.score": {"normalize.standardize"},
     "package.export": {"quality.score"},
 }
 
@@ -71,7 +71,6 @@ PROFILES = {
         "api.collect",
         "normalize.standardize",
         "quality.checks",
-        "quality.dedupe",
         "quality.score",
         "package.export",
     ],
@@ -88,7 +87,6 @@ PROFILES = {
         "enrich.email",
         "enrich.phone",
         "quality.checks",
-        "quality.dedupe",
         "quality.score",
         "package.export",
     ],
@@ -109,7 +107,6 @@ PROFILES = {
         "enrich.email",
         "enrich.phone",
         "quality.checks",
-        "quality.dedupe",
         "quality.score",
         "package.export",
     ],
