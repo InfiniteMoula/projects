@@ -15,7 +15,6 @@ source/
 # --- Logs ---
 *.log
 logs/
-out/*/logs/
 
 # --- Datasets / Outputs ---
 output/
