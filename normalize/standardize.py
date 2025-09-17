@@ -153,22 +153,52 @@ def run(cfg: dict, ctx: dict) -> dict:
                 if filtered_rows == 0:
                     continue
 
+                # Extract raison_sociale with fallback logic (MANDATORY)
+                raison_sociale = _to_str(_pick_first(pdf, ["denominationUniteLegale","denominationunitelegale"])).fillna("")
+                raison_sociale = raison_sociale.where(
+                    raison_sociale.str.len() > 0,
+                    _to_str(_pick_first(pdf, ["denominationUsuelleEtablissement","denominationusuelleetablissement"])).fillna("")
+                )
+                # Final fallback for mandatory raison_sociale
+                raison_sociale = raison_sociale.where(
+                    raison_sociale.str.len() > 0,
+                    "DENOMINATION NON RENSEIGNEE"
+                )
+
+                # Extract enseigne with fallback logic (MANDATORY) 
+                enseigne = _to_str(_pick_first(pdf, ["enseigne1Etablissement","enseigne1etablissement"])).fillna("")
+                # Fallback to raison_sociale if enseigne is missing
+                enseigne = enseigne.where(
+                    enseigne.str.len() > 0,
+                    raison_sociale
+                )
+
+                # Extract adresse with fallback logic (MANDATORY)
+                adresse_main = _to_str(_pick_first(pdf, ["adresseEtablissement","adresseetablissement"]))
+                
+                # Apply mandatory field logic with simple fallback
+                adresse = adresse_main.fillna("ADRESSE NON RENSEIGNEE")
+                adresse = adresse.where(adresse.str.len() > 0, "ADRESSE NON RENSEIGNEE")
+
+                # Extract telephone with fallback (MANDATORY)
+                telephone_norm = _fr_tel_norm(_pick_first(pdf, ["telephone"]))
+                # Replace NA with placeholder for mandatory field
+                telephone_norm = telephone_norm.fillna("TELEPHONE NON RENSEIGNE")
+
                 res = pd.DataFrame({
                     "siren": _to_str(_pick_first(pdf, ["siren"])),
                     "siret": _to_str(_pick_first(pdf, ["siret"])),
-                    "raison_sociale": _to_str(_pick_first(pdf, ["denominationUniteLegale","denominationunitelegale"])).fillna("")
-                        .where(lambda s: s.str.len() > 0,
-                               _to_str(_pick_first(pdf, ["denominationUsuelleEtablissement","denominationusuelleetablissement"]))),
-                    "enseigne": _to_str(_pick_first(pdf, ["enseigne1Etablissement","enseigne1etablissement"])),
+                    "raison_sociale": raison_sociale,
+                    "enseigne": enseigne,
                     "commune": _to_str(_pick_first(pdf, ["libelleCommuneEtablissement","libellecommuneetablissement"])),
                     "cp": _to_str(_pick_first(pdf, ["codePostalEtablissement","codepostaletablissement"])),
-                    "adresse": _to_str(_pick_first(pdf, ["adresseEtablissement","adresseetablissement"])),
+                    "adresse": adresse,
                     "naf": _to_str(_pick_first(pdf, [
                         "activitePrincipaleEtablissement","activiteprincipaleetablissement",
                         "activitePrincipaleUniteLegale","activiteprincipaleunitelegale"
                     ])).str.replace(r"\s", "", regex=True),
                     "date_creation": _to_str(_pick_first(pdf, ["dateCreationEtablissement","datecreationetablissement"])),
-                    "telephone_norm": _fr_tel_norm(_pick_first(pdf, ["telephone"])),
+                    "telephone_norm": telephone_norm,
                     "email": _to_str(_pick_first(pdf, ["email"])),
                     "siteweb": _to_str(_pick_first(pdf, ["siteweb"])),
                     "nom": _to_str(_pick_first(pdf, ["nomUniteLegale","nomunitelegale"])),
