@@ -157,9 +157,14 @@ class KPICalculator:
         for result in results:
             if result.get("step") == "quality.dedupe":
                 out = result.get("out", {})
-                total = out.get("total_records", 1)
-                duplicates = out.get("duplicates_removed", 0)
-                return (duplicates / max(1, total)) * 100
+                # Try new format first, fallback to old format for compatibility
+                if "duplicate_rate_pct" in out:
+                    return out.get("duplicate_rate_pct", 0.0)
+                else:
+                    # Legacy format calculation
+                    total = out.get("total_records", out.get("before", 1))
+                    duplicates = out.get("duplicates_removed", 0)
+                    return (duplicates / max(1, total)) * 100
         return 0.0
     
     def _extract_url_valid_percentage(self, results: list) -> float:

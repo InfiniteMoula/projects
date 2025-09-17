@@ -590,11 +590,18 @@ The system is built as a modular pipeline with discrete steps. Each step can be 
 **Dependencies**: `normalize.standardize`
 
 #### 18. quality.dedupe
-**Purpose**: Remove duplicate records
+**Purpose**: Remove duplicate records with comprehensive analysis
 **Input**: Quality-checked dataset
-**Output**: Deduplicated dataset
+**Output**: Deduplicated dataset with detailed duplicate analysis
 **Configuration**: `dedupe.keys`, `dedupe.fuzzy`
 **Dependencies**: `enrich.email`, `normalize.standardize`
+
+**Enhanced Features**:
+- Detailed duplicate pattern analysis by key combination
+- Data completeness validation for each deduplication key
+- Intelligent handling of empty values to reduce false positives
+- Comprehensive logging for debugging high duplicate rates
+- Validation warnings for suspicious deduplication patterns
 
 #### 19. quality.score
 **Purpose**: Calculate quality scores for each record
@@ -902,7 +909,29 @@ python builder_cli.py resume \
 
 ### Common Issues
 
-#### 1. Memory Issues
+#### 1. High Deduplication Rates
+**Problem**: Unexpectedly high number of duplicates removed (e.g., 94,882 → 50,997 records)
+
+**Causes**:
+- Poor data completeness causing false duplicate matches
+- Inappropriate deduplication keys for the dataset
+- Empty values being treated as duplicates
+
+**Solutions**:
+- Review deduplication logs for detailed analysis
+- Check data completeness percentages in duplicate analysis output
+- Examine top duplicate patterns to identify problematic combinations
+- Consider adjusting deduplication keys in job configuration
+- Use debug mode (`--debug`) to see detailed duplicate analysis
+
+**Debug Information Available**:
+```
+INFO: Starting deduplication analysis for 94882 records using keys: ['siren', 'domain_root', 'best_email']
+WARN: High duplicate rate for keys siren: 65.2% (52431 of 80342 records)
+WARN: Low data completeness for key 'best_email': 23.4% (22201 of 94882 records)
+```
+
+#### 2. Memory Issues
 **Problem**: Process killed due to high memory usage
 
 **Solutions**:
