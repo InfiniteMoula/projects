@@ -137,7 +137,7 @@ def test_address_search_with_mock():
         
         # Check that the function succeeded
         assert result['status'] == 'OK'
-        assert result['records_processed'] == 2
+        assert result['rows'] == 2
         assert result['addresses_extracted'] == 2
         
         # Check database.csv was created

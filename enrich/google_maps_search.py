@@ -393,15 +393,19 @@ def run(cfg: dict, ctx: dict) -> dict:
             # Add enrichment data to main dataset based on constructed addresses
             enriched_df = df.copy()
             for idx, row in df.iterrows():
-                # Build address for this row
+                # Build address for this row (same order as address parsing step)
                 address_parts = []
+                # Column AW: numero_voie
                 if 'numero_voie' in row and pd.notna(row['numero_voie']):
                     address_parts.append(str(row['numero_voie']).strip())
+                # Column BB: type_voie
                 if 'type_voie' in row and pd.notna(row['type_voie']):
                     address_parts.append(str(row['type_voie']).strip())
+                # Column AI: libelle_voie
                 if 'libelle_voie' in row and pd.notna(row['libelle_voie']):
                     address_parts.append(str(row['libelle_voie']).strip())
                 
+                # Column BD: ville
                 city = None
                 if 'ville' in row and pd.notna(row['ville']):
                     city = str(row['ville']).strip()
@@ -409,6 +413,7 @@ def run(cfg: dict, ctx: dict) -> dict:
                     city = str(row['commune']).strip()
                 if city:
                     address_parts.append(city)
+                # Column D: code_postal
                 if 'code_postal' in row and pd.notna(row['code_postal']):
                     address_parts.append(str(row['code_postal']).strip())
                 

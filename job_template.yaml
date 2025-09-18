@@ -14,8 +14,8 @@ http:
 
 sitemap:
   domains: []
-  allow_patterns: ["contact","mentions","about"]
-  max_urls: 500
+  allow_patterns: []
+  max_urls: 0
 
 feeds:
   urls: []

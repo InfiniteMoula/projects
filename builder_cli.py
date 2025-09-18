@@ -42,13 +42,11 @@ STEP_REGISTRY = {
 }
 
 STEP_DEPENDENCIES = {
-    "http.static": {"dumps.collect"},
-    "http.sitemap": {"dumps.collect"},
-    "headless.collect": {"http.static"},
+    "headless.collect": {"dumps.collect"},
     "feeds.collect": {"dumps.collect"},
     "pdf.collect": {"dumps.collect"},
-    "parse.html": {"http.static", "headless.collect"},
-    "parse.jsonld": {"http.static", "http.sitemap"},
+    "parse.html": {"headless.collect"},
+    "parse.jsonld": {"feeds.collect"},
     "parse.pdf": {"pdf.collect"},
     "normalize.standardize": {
         "dumps.collect",
@@ -82,8 +80,6 @@ PROFILES = {
     "standard": [
         "dumps.collect",
         "api.collect",
-        "http.static",
-        "http.sitemap",
         "feeds.collect",
         "parse.jsonld",
         "normalize.standardize",
@@ -101,8 +97,6 @@ PROFILES = {
     "deep": [
         "dumps.collect",
         "api.collect",
-        "http.static",
-        "http.sitemap",
         "headless.collect",
         "feeds.collect",
         "pdf.collect",

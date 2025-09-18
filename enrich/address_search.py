@@ -237,10 +237,38 @@ def run(cfg: dict, ctx: dict) -> dict:
         if logger:
             logger.info(f"Processing {len(df)} records for address extraction")
         
-        # Build addresses from components (numero_voie + type_voie + libelle_voie + ville + code_postal)
-        df['adresse_complete'] = df.apply(_build_address_from_components, axis=1)
+        # Parse addresses from the CSV columns in the specified order:
+        # numero_voie+type_voie+libelle_voie+ville+code_postal (columns AW+BB+AI+BD+D)
+        def build_address_from_specified_columns(row):
+            """Build address from specific columns in exact order."""
+            address_parts = []
+            
+            # Column AW: numero_voie
+            if 'numero_voie' in row and pd.notna(row['numero_voie']):
+                address_parts.append(str(row['numero_voie']).strip())
+            
+            # Column BB: type_voie  
+            if 'type_voie' in row and pd.notna(row['type_voie']):
+                address_parts.append(str(row['type_voie']).strip())
+            
+            # Column AI: libelle_voie
+            if 'libelle_voie' in row and pd.notna(row['libelle_voie']):
+                address_parts.append(str(row['libelle_voie']).strip())
+            
+            # Column BD: ville
+            if 'ville' in row and pd.notna(row['ville']):
+                address_parts.append(str(row['ville']).strip())
+            
+            # Column D: code_postal
+            if 'code_postal' in row and pd.notna(row['code_postal']):
+                address_parts.append(str(row['code_postal']).strip())
+            
+            return ' '.join(address_parts)
         
-        # Create database with addresses and company names in the same order
+        # Build addresses from components in the specified order
+        df['adresse_complete'] = df.apply(build_address_from_specified_columns, axis=1)
+        
+        # Create database with addresses and company names for Google Maps searching
         database_df = pd.DataFrame({
             'index': df.index,
             'adresse': df['adresse_complete'],
@@ -255,22 +283,19 @@ def run(cfg: dict, ctx: dict) -> dict:
         if database_df.empty:
             return {"status": "SKIPPED", "reason": "NO_VALID_ADDRESSES"}
         
-        # Save database.csv
+        # Save database.csv for the Google Maps step
         database_df.to_csv(database_path, index=False)
         
         if logger:
             logger.info(f"Created database.csv with {len(database_df)} address entries")
+            logger.info(f"Sample addresses: {database_df['adresse'].head(3).tolist()}")
         
-        # For backward compatibility, also create the address enriched output
-        # This step now just prepares the addresses - enrichment happens in google_maps step
-        addresses_to_search = database_df['adresse'].unique().tolist()
-        
-        # Create a simple output for this step - actual enrichment moved to google_maps step
+        # Create the output parquet with parsed addresses
         result_df = df.copy()
-        result_df['database_created'] = True
-        result_df['addresses_extracted'] = len(addresses_to_search)
+        result_df['addresses_parsed'] = True
+        result_df['addresses_count'] = len(database_df)
         
-        # Save the address extraction output 
+        # Save the address parsing output 
         output_path = Path(ctx["outdir"]) / "address_extracted.parquet"
         result_df.to_parquet(output_path)
         
@@ -278,15 +303,10 @@ def run(cfg: dict, ctx: dict) -> dict:
         
         return {
             "status": "OK",
-            "step": "enrich.address", 
-            "records_processed": len(df),
-            "addresses_extracted": len(addresses_to_search),
-            "database_records": len(database_df),
-            "duration_s": duration,
-            "files": {
-                "database": str(database_path),
-                "output": str(output_path)
-            }
+            "file": str(output_path),
+            "rows": len(result_df),
+            "addresses_extracted": len(database_df),
+            "duration_s": round(duration, 3)
         }
         
     except Exception as e:

@@ -17,8 +17,8 @@ def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
         outdir_path / "deduped.parquet",
         outdir_path / "enriched_email.parquet", 
         outdir_path / "enriched_domain.parquet",
-        outdir_path / "google_maps_enriched.parquet",  # Add Google Maps enrichment
-        outdir_path / "address_enriched.parquet",  # Add address enrichment
+        outdir_path / "google_maps_enriched.parquet",  # Primary enrichment source
+        outdir_path / "address_extracted.parquet",    # Address parsing output
         outdir_path / "normalized.parquet"
     ]
     
@@ -37,11 +37,8 @@ def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
             # Merge on common columns (typically siren/siret)
             common_cols = [col for col in ['siren', 'siret'] if col in df.columns and col in maps_df.columns]
             if common_cols:
-                # Keep only the new enrichment columns from Google Maps search
-                maps_cols = ['maps_business_names', 'maps_phone_numbers', 'maps_emails', 
-                           'maps_business_types', 'maps_websites', 'maps_director_names', 'maps_rating', 
-                           'maps_review_count', 'maps_search_status']
-                maps_cols = [col for col in maps_cols if col in maps_df.columns]
+                # Keep all the Google Maps enrichment columns
+                maps_cols = [col for col in maps_df.columns if col not in common_cols]
                 
                 if maps_cols:
                     merge_df = maps_df[common_cols + maps_cols]
@@ -51,23 +48,22 @@ def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
             print(f"Warning: Could not merge Google Maps enrichment data: {e}")
 
     # Try to merge with address enrichment data if not already included
-    address_path = outdir_path / "address_enriched.parquet"
+    address_path = outdir_path / "address_extracted.parquet"
     if address_path.exists() and source_path != address_path:
         try:
             address_df = pd.read_parquet(address_path)
             # Merge on common columns (typically siren/siret)
             common_cols = [col for col in ['siren', 'siret'] if col in df.columns and col in address_df.columns]
             if common_cols:
-                # Keep only the new enrichment columns from address search
-                address_cols = ['found_business_names_str', 'found_phones_str', 'found_emails_str', 'search_status']
-                address_cols = [col for col in address_cols if col in address_df.columns]
+                # Keep only the new enrichment columns from address extraction
+                address_cols = [col for col in address_df.columns if col not in common_cols and col not in df.columns]
                 
                 if address_cols:
                     merge_df = address_df[common_cols + address_cols]
                     df = df.merge(merge_df, on=common_cols, how='left')
-                    print(f"Merged address enrichment data with {len(address_cols)} new columns")
+                    print(f"Merged address extraction data with {len(address_cols)} new columns")
         except Exception as e:
-            print(f"Warning: Could not merge address enrichment data: {e}")
+            print(f"Warning: Could not merge address extraction data: {e}")
     
     # Try to merge with quality scores if available
     quality_path = outdir_path / "quality_score.parquet"
