@@ -216,7 +216,7 @@ def test_run_with_missing_data(temp_outdir):
         result = google_maps_search.run({}, ctx)
         
         assert result['status'] == 'SKIPPED'
-        assert 'NO_NORMALIZED_DATA' in result['reason']
+        assert 'NO_DATABASE_OR_NORMALIZED_DATA' in result['reason']
     finally:
         # Restore the file if it was moved
         if backup_path and backup_path.exists():

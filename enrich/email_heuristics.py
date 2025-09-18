@@ -53,14 +53,23 @@ def _pick_first_valid(cands: list[pd.Series], mx_ok: pd.Series) -> pd.Series:
 def run(cfg, ctx):
     t0 = time.time()
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
+    
+    # Primary input: Google Maps enriched data
+    maps_inp = outdir / "google_maps_enriched.parquet"
+    # Fallback inputs: DNS or domain enriched data
     srcs = [outdir / "enriched_dns.parquet", outdir / "enriched_domain.parquet"]
-    src = next((p for p in srcs if p.exists()), None)
+    
+    src = maps_inp if maps_inp.exists() else next((p for p in srcs if p.exists()), None)
     if not src:
         return {"status": "WARN", "error": "no input for email heuristics"}
 
     outp = outdir / "enriched_email.parquet"
     total = 0
     logger = ctx.get("logger")
+    using_maps_data = src == maps_inp
+
+    if logger:
+        logger.info(f"Email heuristics using {'Google Maps' if using_maps_data else 'domain/DNS'} data")
 
     try:
         with ParquetBatchWriter(outp) as writer:
@@ -77,11 +86,29 @@ def run(cfg, ctx):
                 pdf["p"] = _first_letter(pdf["prenom"])
                 pdf["domain_root"] = _s(pdf["domain_root"]).fillna("").str.strip()
                 pdf["email"] = _s(pdf["email"])
-                pdf["mx_ok"] = pdf["mx_ok"].astype("boolean")
+                pdf["mx_ok"] = pdf["mx_ok"].astype("boolean") if "mx_ok" in pdf.columns else pd.Series(True, index=pdf.index, dtype="boolean")
 
+                # Check existing emails
                 existing_ok = pdf["email"].fillna("").str.match(EMAIL_RE) & pdf["mx_ok"].fillna(False)
                 best = pdf["email"].where(existing_ok, "")
 
+                # If using Google Maps data, prioritize maps emails
+                if using_maps_data and "maps_emails" in pdf.columns:
+                    maps_emails = _s(pdf["maps_emails"]).fillna("")
+                    # Parse multiple emails from maps (separated by '; ')
+                    for idx, emails_str in maps_emails.items():
+                        if emails_str and isinstance(emails_str, str):
+                            emails = [e.strip() for e in emails_str.split(';') if e.strip()]
+                            for email in emails:
+                                if EMAIL_RE.match(email) and best.loc[idx] == "":
+                                    best.loc[idx] = email
+                                    break
+                    
+                    if logger:
+                        maps_emails_found = (best != "").sum()
+                        logger.debug(f"Found {maps_emails_found} emails from Google Maps data")
+
+                # Generate heuristic emails for records without emails
                 need_mask = best.str.len().eq(0) & pdf["domain_root"].str.len().gt(0)
 
                 replacements = pd.Series("", index=best.index, dtype="string")
@@ -105,7 +132,13 @@ def run(cfg, ctx):
                 writer.write_table(table)
                 total += len(pdf)
 
-        return {"status": "OK", "file": str(outp), "rows": total, "duration_s": round(time.time() - t0, 3)}
+        return {
+            "status": "OK", 
+            "file": str(outp), 
+            "rows": total, 
+            "duration_s": round(time.time() - t0, 3),
+            "using_maps_data": using_maps_data
+        }
     except Exception as exc:
         if logger:
             logger.exception("email heuristics failed: %s", exc)

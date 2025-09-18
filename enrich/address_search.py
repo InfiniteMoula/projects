@@ -177,8 +177,40 @@ def _merge_search_results(search_results: List[Dict]) -> pd.DataFrame:
     
     return df
 
+def _build_address_from_components(row: pd.Series) -> str:
+    """Build a complete address from individual components."""
+    address_parts = []
+    
+    # Add street number (numero_voie)
+    if 'numero_voie' in row and pd.notna(row['numero_voie']):
+        address_parts.append(str(row['numero_voie']).strip())
+    
+    # Add street type (type_voie)  
+    if 'type_voie' in row and pd.notna(row['type_voie']):
+        address_parts.append(str(row['type_voie']).strip())
+    
+    # Add street name (libelle_voie)
+    if 'libelle_voie' in row and pd.notna(row['libelle_voie']):
+        address_parts.append(str(row['libelle_voie']).strip())
+    
+    # Add city (ville/commune)
+    city = None
+    if 'ville' in row and pd.notna(row['ville']):
+        city = str(row['ville']).strip()
+    elif 'commune' in row and pd.notna(row['commune']):
+        city = str(row['commune']).strip()
+    
+    if city:
+        address_parts.append(city)
+    
+    # Add postal code (code_postal)
+    if 'code_postal' in row and pd.notna(row['code_postal']):
+        address_parts.append(str(row['code_postal']).strip())
+    
+    return ' '.join(address_parts)
+
 def run(cfg: dict, ctx: dict) -> dict:
-    """Run address search enrichment."""
+    """Run address extraction and database creation step."""
     logger = ctx.get("logger")
     t0 = time.time()
     
@@ -188,15 +220,9 @@ def run(cfg: dict, ctx: dict) -> dict:
         # Fallback to CSV if parquet doesn't exist
         input_path = Path(ctx["outdir"]) / "normalized.csv"
         if not input_path.exists():
-            # Look for normalized.csv in project root
-            input_path = Path("/home/runner/work/projects/projects/normalized.csv")
-            if not input_path.exists():
-                # Check current working directory
-                input_path = Path("normalized.csv")
-                if not input_path.exists():
-                    return {"status": "SKIPPED", "reason": "NO_NORMALIZED_DATA"}
+            return {"status": "SKIPPED", "reason": "NO_NORMALIZED_DATA"}
     
-    output_path = Path(ctx["outdir"]) / "address_enriched.parquet"
+    database_path = Path(ctx["outdir"]) / "database.csv"
     
     try:
         # Load input data
@@ -208,104 +234,62 @@ def run(cfg: dict, ctx: dict) -> dict:
         if df.empty:
             return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
         
-        # Check if adresse column exists
-        if 'adresse' not in df.columns:
-            return {"status": "SKIPPED", "reason": "NO_ADDRESS_COLUMN"}
+        if logger:
+            logger.info(f"Processing {len(df)} records for address extraction")
         
-        # Filter to rows with valid addresses
-        valid_addresses = df[df['adresse'].notna() & (df['adresse'].str.strip() != '')]
+        # Build addresses from components (numero_voie + type_voie + libelle_voie + ville + code_postal)
+        df['adresse_complete'] = df.apply(_build_address_from_components, axis=1)
         
-        if valid_addresses.empty:
+        # Create database with addresses and company names in the same order
+        database_df = pd.DataFrame({
+            'index': df.index,
+            'adresse': df['adresse_complete'],
+            'company_name': df.get('denomination', df.get('raison_sociale', '')),
+            'siren': df.get('siren', ''),
+            'siret': df.get('siret', '')
+        })
+        
+        # Filter out rows with empty addresses
+        database_df = database_df[database_df['adresse'].str.strip() != '']
+        
+        if database_df.empty:
             return {"status": "SKIPPED", "reason": "NO_VALID_ADDRESSES"}
         
-        addresses_to_search = valid_addresses['adresse'].unique().tolist()
+        # Save database.csv
+        database_df.to_csv(database_path, index=False)
         
         if logger:
-            logger.info(f"Starting address search for {len(addresses_to_search)} unique addresses")
+            logger.info(f"Created database.csv with {len(database_df)} address entries")
         
-        # Perform searches with rate limiting
-        search_results = []
+        # For backward compatibility, also create the address enriched output
+        # This step now just prepares the addresses - enrichment happens in google_maps step
+        addresses_to_search = database_df['adresse'].unique().tolist()
         
-        with httpx.Client(
-            headers={"User-Agent": USER_AGENT},
-            follow_redirects=True
-        ) as session:
-            
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                # Submit search tasks
-                future_to_address = {
-                    executor.submit(_search_address, address, session): address 
-                    for address in addresses_to_search
-                }
-                
-                # Collect results
-                for future in as_completed(future_to_address):
-                    address = future_to_address[future]
-                    try:
-                        result = future.result()
-                        search_results.append(result)
-                        if logger:
-                            logger.debug(f"Completed search for: {address}")
-                    except Exception as e:
-                        if logger:
-                            logger.error(f"Search failed for {address}: {e}")
-                        search_results.append({
-                            'address': address,
-                            'search_status': 'error'
-                        })
+        # Create a simple output for this step - actual enrichment moved to google_maps step
+        result_df = df.copy()
+        result_df['database_created'] = True
+        result_df['addresses_extracted'] = len(addresses_to_search)
         
-        # Merge results
-        search_df = _merge_search_results(search_results)
+        # Save the address extraction output 
+        output_path = Path(ctx["outdir"]) / "address_extracted.parquet"
+        result_df.to_parquet(output_path)
         
-        if search_df.empty:
-            return {"status": "FAIL", "reason": "NO_SEARCH_RESULTS"}
-        
-        # Join with original data
-        enriched_df = df.merge(
-            search_df[['address', 'found_business_names_str', 'found_phones_str', 'found_emails_str', 'search_status']], 
-            left_on='adresse', 
-            right_on='address', 
-            how='left'
-        )
-        
-        # Clean up merge column
-        enriched_df.drop('address', axis=1, inplace=True)
-        
-        # Fill missing values
-        enriched_df['found_business_names_str'] = enriched_df['found_business_names_str'].fillna('')
-        enriched_df['found_phones_str'] = enriched_df['found_phones_str'].fillna('')
-        enriched_df['found_emails_str'] = enriched_df['found_emails_str'].fillna('')
-        enriched_df['search_status'] = enriched_df['search_status'].fillna('not_searched')
-        
-        # Save results
-        table = pa.Table.from_pandas(enriched_df, preserve_index=False)
-        with ParquetBatchWriter(output_path) as writer:
-            writer.write_table(table)
-        
-        # Stats
-        searched_count = len(search_results)
-        enriched_count = enriched_df['found_business_names_str'].str.len().gt(0).sum()
-        phone_found_count = enriched_df['found_phones_str'].str.len().gt(0).sum()
-        
-        if logger:
-            logger.info(f"Address search completed: {searched_count} addresses searched, "
-                       f"{enriched_count} got business names, {phone_found_count} got phone numbers")
+        duration = time.time() - t0
         
         return {
-            "status": "OK", 
-            "file": str(output_path), 
-            "rows": len(enriched_df),
-            "addresses_searched": searched_count,
-            "businesses_found": enriched_count,
-            "phones_found": phone_found_count,
-            "duration_s": round(time.time() - t0, 3)
+            "status": "OK",
+            "step": "enrich.address", 
+            "records_processed": len(df),
+            "addresses_extracted": len(addresses_to_search),
+            "database_records": len(database_df),
+            "duration_s": duration,
+            "files": {
+                "database": str(database_path),
+                "output": str(output_path)
+            }
         }
         
-    except Exception as exc:
+    except Exception as e:
         if logger:
-            logger.exception(f"Address search failed: {exc}")
-        return {
-            "status": "FAIL", 
-            "error": str(exc), 
-            "duration_s": round(time.time() - t0, 3)
-        }
+            logger.error(f"Error in address extraction: {str(e)}")
+        return {"status": "ERROR", "error": str(e)}

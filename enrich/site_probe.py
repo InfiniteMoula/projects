@@ -48,10 +48,16 @@ def _probe_with_retry(url: str, *, timeout: float, retries: int) -> tuple[bool, 
 def run(cfg: dict, ctx: dict) -> dict:
     t0 = time.time()
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
-    inp = outdir / "enriched_domain.parquet"
+    
+    # Primary input: Google Maps enriched data
+    maps_inp = outdir / "google_maps_enriched.parquet"
+    # Fallback input: domain enriched data
+    domain_inp = outdir / "enriched_domain.parquet"
+    
+    inp = maps_inp if maps_inp.exists() else domain_inp
     outp = outdir / "enriched_site.parquet"
     if not inp.exists():
-        return {"status": "WARN", "error": f"missing {inp}"}
+        return {"status": "WARN", "error": f"missing input: {inp}"}
 
     timeout = float(ctx.get("site_probe_timeout", REQ_TIMEOUT))
     ttl = int(ctx.get("site_probe_ttl", DEFAULT_CACHE_TTL))
@@ -59,6 +65,10 @@ def run(cfg: dict, ctx: dict) -> dict:
     workers = max(1, int(ctx.get("workers", 4)))
     dry_run = bool(ctx.get("dry_run", False))
     logger = ctx.get("logger")
+    using_maps_data = inp == maps_inp
+
+    if logger:
+        logger.info(f"Site probe using {'Google Maps' if using_maps_data else 'domain'} data")
 
     cache: Dict[str, Tuple[float, tuple[bool, str]]] = {}
 
@@ -85,8 +95,23 @@ def run(cfg: dict, ctx: dict) -> dict:
                 pdf["siteweb"] = pdf.get("siteweb", pd.Series(pd.NA, index=pdf.index)).astype("string")
                 pdf["domain_root"] = pdf.get("domain_root", pd.Series(pd.NA, index=pdf.index)).astype("string")
 
+                # Build URL list - prioritize Google Maps websites if available
                 url = pdf["siteweb"].fillna("").astype("string")
                 fallback = pdf["domain_root"].fillna("").astype("string")
+                
+                if using_maps_data and "maps_websites" in pdf.columns:
+                    maps_websites = pdf["maps_websites"].fillna("").astype("string")
+                    # Parse multiple websites from maps (separated by '; ')
+                    for idx, websites_str in maps_websites.items():
+                        if websites_str and isinstance(websites_str, str):
+                            websites = [w.strip() for w in websites_str.split(';') if w.strip()]
+                            if websites and url.loc[idx] == "":
+                                url.loc[idx] = websites[0]  # Use first website
+                    
+                    if logger:
+                        maps_websites_found = (maps_websites != "").sum()
+                        logger.debug(f"Found {maps_websites_found} websites from Google Maps data")
+
                 url = url.where(url.str.strip().ne(""), fallback)
 
                 mask = url.str.strip().ne("")
@@ -114,8 +139,15 @@ def run(cfg: dict, ctx: dict) -> dict:
                 writer.write_table(table)
                 total += len(pdf)
 
-        return {"status": "OK", "file": str(outp), "rows": total, "duration_s": round(time.time() - t0, 3)}
+        return {
+            "status": "OK", 
+            "file": str(outp), 
+            "rows": total, 
+            "duration_s": round(time.time() - t0, 3),
+            "using_maps_data": using_maps_data
+        }
     except Exception as exc:
         if logger:
             logger.exception("site probe failed: %s", exc)
+        return {"status": "FAIL", "error": str(exc), "duration_s": round(time.time() - t0, 3)}
         return {"status": "FAIL", "error": str(exc), "duration_s": round(time.time() - t0, 3)}
