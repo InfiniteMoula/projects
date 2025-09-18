@@ -125,10 +125,26 @@ COLUMN_GROUPS = {
         'secteur_activite', 'SECTEUR_ACTIVITE', 'secteur', 'SECTEUR'
     ],
     'forme_juridique': [
-        'forme_juridique', 'FORME_JURIDIQUE', 'forme', 'FORME'
+        'forme_juridique', 'FORME_JURIDIQUE', 'forme', 'FORME',
+        'categorieJuridiqueUniteLegale', 'categoriejuridiqueunitelegale', 'CATEGORIEJURIDIQUEUNITELEGALE',
+        'formeJuridique', 'formejuridique', 'FORMEJURIDIQUE'
     ],
     'capital_social': [
         'capital_social', 'CAPITAL_SOCIAL', 'capital', 'CAPITAL'
+    ],
+    'date_immatriculation': [
+        'date_immatriculation', 'DATE_IMMATRICULATION', 'dateImmatriculation', 'dateimmatriculation', 'DATEIMMATRICULATION',
+        'dateCreationUniteLegale', 'datecreationunitelegale', 'DATECREATIONUNITELEGALE',
+        'date_creation', 'DATE_CREATION', 'date_debut_activite', 'DATE_DEBUT_ACTIVITE'
+    ],
+    'dirigeant_nom': [
+        'dirigeant_nom', 'DIRIGEANT_NOM', 'dirigeant', 'DIRIGEANT',
+        'nomUsageUniteLegale', 'nomusageunitelegale', 'NOMUSAGEUNITELEGALE',
+        'denominationUsuelle1UniteLegale', 'denominationusuelle1unitelegale', 'DENOMINATIONUSUELLE1UNITELEGALE'
+    ],
+    'dirigeant_prenom': [
+        'dirigeant_prenom', 'DIRIGEANT_PRENOM',
+        'prenomUsuelUniteLegale', 'prenomusuelunitelegale', 'PRENOMUSUELUNITELEGALE'
     ]
 }
 
@@ -162,6 +178,49 @@ def _to_str_filtered(s: pd.Series | None) -> pd.Series:
     str_series = str_series.replace("", pd.NA)
     
     return str_series
+
+
+def _extract_departement(postal_code_series: pd.Series | None) -> pd.Series:
+    """Extract département code from postal code (first 2 digits)."""
+    if postal_code_series is None:
+        return pd.Series(pd.NA, dtype="string")
+    
+    str_series = _to_str(postal_code_series)
+    
+    def extract_dept(postal_code):
+        if pd.isna(postal_code) or postal_code == '':
+            return pd.NA
+        
+        postal_str = str(postal_code).strip()
+        
+        # Handle 4-digit postal codes which are missing a leading zero
+        if len(postal_str) == 4 and postal_str.isdigit():
+            # For 4-digit codes, we need to determine if it's missing a leading zero
+            # Codes like 1000-1999, 2000-2999, etc. are departments 01, 02, etc.
+            first_digit = postal_str[0]
+            if first_digit in '123456789':
+                # These are departments 01-09, so add leading zero
+                dept_code = '0' + first_digit
+            else:
+                # This shouldn't happen for valid French postal codes
+                dept_code = postal_str[:2]
+        elif len(postal_str) >= 5 and postal_str.isdigit():
+            # Normal 5-digit postal code
+            dept_code = postal_str[:2]
+        elif len(postal_str) >= 2:
+            # Extract first 2 characters
+            dept_code = postal_str[:2]
+        else:
+            return pd.NA
+        
+        # Ensure we always return a 2-digit department code
+        if len(dept_code) == 1:
+            dept_code = '0' + dept_code
+        
+        return dept_code
+    
+    departement = str_series.apply(extract_dept)
+    return departement.astype("string")
 
 
 def _fr_tel_norm(s: pd.Series | None) -> pd.Series:
@@ -236,6 +295,18 @@ def _extract_all_columns(df: pd.DataFrame) -> dict:
             used_columns.update(available_cols)
             # Merge the columns
             result[group_name] = _merge_columns(df, available_cols)
+    
+    # Special processing for département extraction from postal code
+    if 'code_postal' in result or any('postal' in col.lower() for col in df.columns):
+        postal_code_series = result.get('code_postal')
+        if postal_code_series is None:
+            # Try to find postal code in remaining columns
+            postal_cols = [col for col in df.columns if 'postal' in col.lower() or 'cp' in col.lower()]
+            if postal_cols:
+                postal_code_series = _merge_columns(df, postal_cols)
+        
+        if postal_code_series is not None:
+            result['departement'] = _extract_departement(postal_code_series)
     
     # Add any remaining columns that weren't matched to groups
     remaining_cols = set(df.columns) - used_columns

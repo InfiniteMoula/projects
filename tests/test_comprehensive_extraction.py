@@ -53,6 +53,12 @@ def test_comprehensive_extraction_captures_all_data():
             'secteur_activite': ['Comptabilité', 'Conseil'],
             'trancheEffectifsEtablissement': ['20-49', '10-19'],
             'date_creation': ['2010-01-01', '2015-06-15'],
+            
+            # Additional required fields for the new requirements
+            'categorieJuridiqueUniteLegale': ['5499', '5498'],  # Legal form codes
+            'dateCreationUniteLegale': ['2010-01-01', '2015-06-15'],  # Registration dates
+            'nomUsageUniteLegale': ['MARTIN', 'DUPONT'],  # Director last names
+            'prenomUsuelUniteLegale': ['Jean', 'Pierre'],  # Director first names
         }
         
         input_df = pd.DataFrame(input_data)
@@ -95,6 +101,23 @@ def test_comprehensive_extraction_captures_all_data():
         # Verify business information is captured
         business_columns = [col for col in normalized_df.columns if col in ['capital_social', 'forme_juridique', 'secteur_activite']]
         assert len(business_columns) >= 3, f"Expected business info columns, got {business_columns}"
+        
+        # Verify new required fields for dataset.csv are captured
+        required_fields = ['siren', 'denomination', 'forme_juridique', 'date_immatriculation', 
+                          'code_postal', 'departement', 'telephone_norm', 'email', 'website', 'dirigeant_nom']
+        missing_required = [field for field in required_fields if field not in normalized_df.columns]
+        assert len(missing_required) == 0, f"Missing required fields for dataset.csv: {missing_required}"
+        
+        # Verify département extraction works
+        if 'departement' in normalized_df.columns and 'code_postal' in normalized_df.columns:
+            # Check that département is extracted from postal code
+            for idx, row in normalized_df.iterrows():
+                if pd.notna(row['code_postal']) and pd.notna(row['departement']):
+                    postal_code = str(row['code_postal'])
+                    dept = str(row['departement'])
+                    if len(postal_code) >= 2:
+                        expected_dept = postal_code[:2]
+                        assert dept == expected_dept, f"Département extraction failed: expected {expected_dept}, got {dept}"
         
         # Verify backward compatibility - legacy column names should still exist
         legacy_columns = ['siren', 'siret', 'raison_sociale', 'adresse', 'naf', 'telephone_norm']
