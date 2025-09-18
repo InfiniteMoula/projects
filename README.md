@@ -1092,10 +1092,11 @@ def run(config, context):
 
 ---
 
-For more detailed information, see the specific documentation files:
-- [BATCH_GUIDE.md](BATCH_GUIDE.md) - Batch processing documentation
-- [BUDGET_MIDDLEWARE.md](BUDGET_MIDDLEWARE.md) - Budget and KPI system details
-- [niche_guide.md](niche_guide.md) - Niche development guide
+For more detailed information, see the documentation in the `/docs` directory:
+- [docs/implementation-guide.md](docs/implementation-guide.md) - Comprehensive implementation guide
+- [docs/google-maps.md](docs/google-maps.md) - Google Maps integration guide  
+- [docs/address-search.md](docs/address-search.md) - Address search functionality
+- [docs/legal.md](docs/legal.md) - Legal compliance requirements
 - [package/README.md](package/README.md) - Export system documentation
 
 For support or questions, please check the logs first, then refer to the troubleshooting section above.
