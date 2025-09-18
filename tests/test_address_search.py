@@ -71,6 +71,10 @@ def test_address_search_with_mock():
                 '123 Avenue des Champs-Élysées, 75008 Paris',
                 '456 Rue de la République, 69001 Lyon'
             ],
+            'numero_voie': ['123', '456'],
+            'type_voie': ['Avenue', 'Rue'],
+            'libelle_voie': ['des Champs-Élysées', 'de la République'],
+            'ville': ['Paris', 'Lyon'],
             'code_postal': ['75008', '69001'],
             'commune': ['Paris', 'Lyon'],
             'naf': ['6920Z', '6920Z'],
@@ -133,25 +137,30 @@ def test_address_search_with_mock():
         
         # Check that the function succeeded
         assert result['status'] == 'OK'
-        assert result['rows'] == 2
-        assert result['addresses_searched'] == 2
+        assert result['records_processed'] == 2
+        assert result['addresses_extracted'] == 2
+        
+        # Check database.csv was created
+        database_path = tmpdir / "database.csv"
+        assert database_path.exists()
+        
+        database_df = pd.read_csv(database_path)
+        assert len(database_df) == 2
         
         # Check output file
-        output_path = tmpdir / "address_enriched.parquet"
+        output_path = tmpdir / "address_extracted.parquet"
         assert output_path.exists()
         
         enriched_df = pd.read_parquet(output_path)
         assert len(enriched_df) == 2
         
-        # Check that enrichment columns exist
-        assert 'found_business_names_str' in enriched_df.columns
-        assert 'found_phones_str' in enriched_df.columns
-        assert 'found_emails_str' in enriched_df.columns
-        assert 'search_status' in enriched_df.columns
+        # Check that database was created correctly
+        assert 'adresse' in database_df.columns
+        assert 'company_name' in database_df.columns
         
-        # Check that some data was found
-        assert enriched_df['found_business_names_str'].str.len().gt(0).any()
-        assert enriched_df['found_phones_str'].str.len().gt(0).any()
+        # Check that the database contains valid addresses (constructed from components)
+        assert database_df['adresse'].str.len().gt(0).all()
+        assert database_df['company_name'].str.len().gt(0).all()
         
 
 def test_address_search_no_input():
@@ -179,7 +188,11 @@ def test_address_search_empty_addresses():
         input_data = {
             'siren': ['123456789'],
             'siret': ['12345678900001'],
-            'adresse': [''],  # Empty address
+            'numero_voie': [''],  # Empty address components
+            'type_voie': [''],
+            'libelle_voie': [''],
+            'ville': [''],
+            'code_postal': [''],
             'nom': ['Dupont']
         }
         

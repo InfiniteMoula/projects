@@ -257,24 +257,33 @@ def run(cfg: dict, ctx: dict) -> dict:
     logger = ctx.get("logger")
     t0 = time.time()
     
-    # Input/output paths
+    # Input/output paths - first check for database.csv from address step
+    database_path = Path(ctx["outdir"]) / "database.csv"
     input_path = Path(ctx["outdir"]) / "normalized.parquet"
+    
+    if not database_path.exists():
+        # Fallback to old behavior if database.csv doesn't exist
+        if not input_path.exists():
+            input_path = Path(ctx["outdir"]) / "normalized.csv"
+            if not input_path.exists():
+                return {"status": "SKIPPED", "reason": "NO_DATABASE_OR_NORMALIZED_DATA"}
+        database_df = None
+    else:
+        # Load database.csv with addresses
+        database_df = pd.read_csv(database_path)
+        if database_df.empty:
+            return {"status": "SKIPPED", "reason": "EMPTY_DATABASE"}
+    
+    # Also need the main dataset for final merge
     if not input_path.exists():
-        # Fallback to CSV if parquet doesn't exist
         input_path = Path(ctx["outdir"]) / "normalized.csv"
         if not input_path.exists():
-            # Look for normalized.csv in project root
-            input_path = Path("/home/runner/work/projects/projects/normalized.csv")
-            if not input_path.exists():
-                # Check current working directory
-                input_path = Path("normalized.csv")
-                if not input_path.exists():
-                    return {"status": "SKIPPED", "reason": "NO_NORMALIZED_DATA"}
+            return {"status": "SKIPPED", "reason": "NO_NORMALIZED_DATA"}
     
     output_path = Path(ctx["outdir"]) / "google_maps_enriched.parquet"
     
     try:
-        # Load input data
+        # Load main input data
         if input_path.suffix == '.parquet':
             df = pd.read_parquet(input_path)
         else:
@@ -283,26 +292,38 @@ def run(cfg: dict, ctx: dict) -> dict:
         if df.empty:
             return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
         
-        # Check for required columns
-        required_cols = ['raison_sociale', 'commune', 'code_postal']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            return {"status": "SKIPPED", "reason": f"MISSING_COLUMNS_{missing_cols}"}
+        # Use database.csv if available, otherwise fall back to building addresses from components
+        if database_df is not None:
+            # Use addresses from database.csv
+            addresses_to_search = database_df[['adresse', 'company_name']].drop_duplicates()
+            if logger:
+                logger.info(f"Using {len(addresses_to_search)} addresses from database.csv")
+        else:
+            # Fall back to old behavior
+            # Check for required columns
+            required_cols = ['raison_sociale', 'commune', 'code_postal']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                return {"status": "SKIPPED", "reason": f"MISSING_COLUMNS_{missing_cols}"}
+            
+            # Build search queries for each row
+            df['maps_query'] = df.apply(_build_address_query, axis=1)
+            
+            # Filter to rows with valid queries
+            valid_queries = df[df['maps_query'].str.strip() != '']
+            
+            if valid_queries.empty:
+                return {"status": "SKIPPED", "reason": "NO_VALID_QUERIES"}
+            
+            addresses_to_search = valid_queries[['maps_query']].drop_duplicates()
+            addresses_to_search.columns = ['adresse']
+            addresses_to_search['company_name'] = ''
         
-        # Build search queries for each row
-        df['maps_query'] = df.apply(_build_address_query, axis=1)
-        
-        # Filter to rows with valid queries
-        valid_queries = df[df['maps_query'].str.strip() != '']
-        
-        if valid_queries.empty:
-            return {"status": "SKIPPED", "reason": "NO_VALID_QUERIES"}
-        
-        # Get unique queries to avoid duplicate searches
-        unique_queries = valid_queries['maps_query'].unique().tolist()
+        # Get unique addresses to search
+        unique_queries = addresses_to_search['adresse'].unique().tolist()
         
         if logger:
-            logger.info(f"Starting Google Maps search for {len(unique_queries)} unique queries")
+            logger.info(f"Starting Google Maps search for {len(unique_queries)} unique addresses")
         
         # Perform searches with extensive rate limiting
         search_results = []
@@ -350,17 +371,78 @@ def run(cfg: dict, ctx: dict) -> dict:
         if search_df.empty:
             return {"status": "FAIL", "reason": "NO_SEARCH_RESULTS"}
         
-        # Join with original data
-        enriched_df = df.merge(
-            search_df[['query', 'business_names_str', 'phone_numbers_str', 'emails_str', 
-                      'business_types_str', 'websites_str', 'director_names_str', 'rating', 'review_count', 'search_status']], 
-            left_on='maps_query', 
-            right_on='query', 
-            how='left'
-        )
-        
-        # Clean up merge column
-        enriched_df.drop(['query', 'maps_query'], axis=1, inplace=True)
+        # Join with original data - different logic depending on data source
+        if database_df is not None:
+            # When using database.csv, merge on address
+            # First, create a mapping from address to enrichment data
+            address_to_enrichment = {}
+            for _, row in search_df.iterrows():
+                address = row['query']
+                address_to_enrichment[address] = {
+                    'business_names_str': row.get('business_names_str', ''),
+                    'phone_numbers_str': row.get('phone_numbers_str', ''),
+                    'emails_str': row.get('emails_str', ''),
+                    'business_types_str': row.get('business_types_str', ''),
+                    'websites_str': row.get('websites_str', ''),
+                    'director_names_str': row.get('director_names_str', ''),
+                    'rating': row.get('rating', None),
+                    'review_count': row.get('review_count', None),
+                    'search_status': row.get('search_status', 'not_searched')
+                }
+            
+            # Add enrichment data to main dataset based on constructed addresses
+            enriched_df = df.copy()
+            for idx, row in df.iterrows():
+                # Build address for this row
+                address_parts = []
+                if 'numero_voie' in row and pd.notna(row['numero_voie']):
+                    address_parts.append(str(row['numero_voie']).strip())
+                if 'type_voie' in row and pd.notna(row['type_voie']):
+                    address_parts.append(str(row['type_voie']).strip())
+                if 'libelle_voie' in row and pd.notna(row['libelle_voie']):
+                    address_parts.append(str(row['libelle_voie']).strip())
+                
+                city = None
+                if 'ville' in row and pd.notna(row['ville']):
+                    city = str(row['ville']).strip()
+                elif 'commune' in row and pd.notna(row['commune']):
+                    city = str(row['commune']).strip()
+                if city:
+                    address_parts.append(city)
+                if 'code_postal' in row and pd.notna(row['code_postal']):
+                    address_parts.append(str(row['code_postal']).strip())
+                
+                address = ' '.join(address_parts)
+                
+                # Get enrichment data for this address
+                enrichment = address_to_enrichment.get(address, {
+                    'business_names_str': '',
+                    'phone_numbers_str': '',
+                    'emails_str': '',
+                    'business_types_str': '',
+                    'websites_str': '',
+                    'director_names_str': '',
+                    'rating': None,
+                    'review_count': None,
+                    'search_status': 'not_searched'
+                })
+                
+                # Add enrichment columns
+                for key, value in enrichment.items():
+                    enriched_df.at[idx, key] = value
+                    
+        else:
+            # Original logic for when not using database.csv
+            enriched_df = df.merge(
+                search_df[['query', 'business_names_str', 'phone_numbers_str', 'emails_str', 
+                          'business_types_str', 'websites_str', 'director_names_str', 'rating', 'review_count', 'search_status']], 
+                left_on='maps_query', 
+                right_on='query', 
+                how='left'
+            )
+            
+            # Clean up merge column
+            enriched_df.drop(['query', 'maps_query'], axis=1, inplace=True)
         
         # Rename columns to have maps prefix for clarity
         column_mapping = {
