@@ -25,9 +25,13 @@ sitemap:
   max_urls: 500
 
 feeds:
-  urls: []
+  urls:
+    - "https://www.experts-comptables.fr/rss.xml"
+    - "https://www.ifec.fr/feed"
 pdf:
-  urls: []
+  urls:
+    - "https://www.experts-comptables.fr/documents/guide.pdf"
+    - "https://www.ifec.fr/ressources/brochure.pdf"
 api:
   endpoints: []
 

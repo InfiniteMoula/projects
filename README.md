@@ -163,7 +163,7 @@ Execute a single pipeline step:
 python builder_cli.py run-step --step STEP_NAME [OPTIONS]
 ```
 
-Available steps: `dumps.collect`, `api.collect`, `http.static`, `parse.html`, `normalize.standardize`, `enrich.email`, `quality.score`, `package.export`, etc.
+Available steps: `dumps.collect`, `api.collect`, `http.static`, `http.sitemap`, `headless.collect`, `feeds.collect`, `pdf.collect`, `parse.html`, `parse.jsonld`, `parse.pdf`, `normalize.standardize`, `enrich.email`, `quality.score`, `package.export`, etc.
 
 ### 3. batch
 
@@ -406,6 +406,18 @@ sitemap:
   domains: ["example.com"]
   allow_patterns: ["contact", "about"]
   max_urls: 500
+
+# RSS/Atom feeds collection
+feeds:
+  urls: ["https://example.com/feed.xml"]
+  max_entries: 50
+  timeout: 30
+
+# PDF document collection
+pdf:
+  urls: ["https://example.com/brochure.pdf"]
+  max_size_mb: 10
+  timeout: 60
 
 # Data enrichment
 enrich:
