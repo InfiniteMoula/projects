@@ -27,7 +27,13 @@ def _bool(s: pd.Series) -> pd.Series:
 def run(cfg, ctx):
     t0 = time.time()
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
-    src = outdir / "enriched_domain.parquet"
+    
+    # Primary input: Google Maps enriched data (to be mostly useless as requested)
+    maps_inp = outdir / "google_maps_enriched.parquet"
+    # Fallback input: domain enriched data
+    domain_inp = outdir / "enriched_domain.parquet"
+    
+    src = maps_inp if maps_inp.exists() else domain_inp
     outp = outdir / "enriched_dns.parquet"
     if not src.exists():
         return {"status": "WARN", "error": "no input for dns checks"}
@@ -35,6 +41,11 @@ def run(cfg, ctx):
     ttl = int(ctx.get("dns_cache_ttl", DEFAULT_CACHE_TTL))
     workers = max(1, int(ctx.get("workers", 4)))
     logger = ctx.get("logger")
+    using_maps_data = src == maps_inp
+    
+    # As requested - make DNS checks mostly useless when using Google Maps data
+    if using_maps_data and logger:
+        logger.info("DNS checks using Google Maps data - minimal functionality as requested")
 
     pf = pq.ParquetFile(str(src))
     base_schema = pf.schema_arrow
@@ -43,10 +54,11 @@ def run(cfg, ctx):
         fields.append(pa.field("dns_ok", pa.bool_()))
     if "mx_ok" not in pf.schema.names:
         fields.append(pa.field("mx_ok", pa.bool_()))
+    # Create schema that includes all existing fields plus dns/mx fields
     schema = pa.schema(fields)
 
     resolver = None
-    if dns:
+    if dns and not using_maps_data:  # Skip DNS resolution when using maps data
         resolver = dns.resolver.Resolver(configure=True)
         resolver.lifetime = DNS_TIMEOUT
         resolver.timeout = DNS_TIMEOUT
@@ -57,6 +69,14 @@ def run(cfg, ctx):
         results: Dict[str, bool] = {}
         now = time.time()
         pending = []
+        
+        # If using maps data, assume all domains are valid (making DNS checks useless)
+        if using_maps_data:
+            for domain in domains:
+                results[domain] = True  # Assume valid since it came from Google Maps
+                cache[(record_type, domain)] = (now + ttl, True)
+            return results
+        
         for domain in domains:
             key = (record_type, domain)
             cached = cache.get(key)
@@ -100,7 +120,7 @@ def run(cfg, ctx):
     total = 0
 
     try:
-        with ParquetBatchWriter(outp, schema=schema) as writer:
+        with ParquetBatchWriter(outp) as writer:
             for pdf in iter_batches(src):
                 if pdf.empty:
                     continue
@@ -118,7 +138,7 @@ def run(cfg, ctx):
                 pdf["dns_ok"] = _bool(dns_ok)
                 pdf["mx_ok"] = _bool(mx_ok)
 
-                table = pa.Table.from_pandas(pdf, preserve_index=False).cast(schema, safe=False)
+                table = pa.Table.from_pandas(pdf, preserve_index=False)
                 writer.write_table(table)
                 total += len(pdf)
 
