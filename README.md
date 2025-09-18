@@ -22,7 +22,9 @@ A comprehensive data scraping and enrichment system designed to collect, process
 ## Features
 
 - **Multi-source data collection**: Web scraping, API calls, RSS feeds, PDF extraction
+- **Apify platform integration**: Google Places, Google Maps, and LinkedIn scrapers
 - **Intelligent enrichment**: Email discovery, domain validation, phone normalization
+- **Executive data**: CEO, CFO, Directors and Founder information via LinkedIn
 - **Quality control**: Scoring, validation checks
 - **Flexible profiles**: Quick, standard, and deep processing modes
 - **Budget management**: Control resource usage (time, RAM, HTTP requests)
@@ -73,6 +75,9 @@ Edit `.env` file with your settings:
 # API Keys
 HUNTER_API_KEY=your_hunter_api_key_here
 
+# Apify API Configuration
+APIFY_API_TOKEN=your_apify_api_token_here
+
 # Proxy Settings (optional)
 HTTP_PROXY=http://proxy:port
 HTTPS_PROXY=https://proxy:port
@@ -81,6 +86,7 @@ HTTPS_PROXY=https://proxy:port
 ### 3. Environment Variables Explained
 
 - **HUNTER_API_KEY**: API key for Hunter.io email validation service (optional)
+- **APIFY_API_TOKEN**: API token for Apify platform scrapers (get from https://console.apify.com/account/integrations)
 - **HTTP_PROXY/HTTPS_PROXY**: Proxy configuration for HTTP requests (optional)
 
 ## Quick Start
@@ -424,6 +430,28 @@ enrich:
   directory_csv: ""  # External directory file
   email_formats_priority: ["contact@{d}", "info@{d}"]
 
+# Apify scrapers configuration
+apify:
+  enabled: true  # Enable/disable Apify agents
+  max_addresses: 50  # Limit addresses processed (cost control)
+  save_raw_results: true  # Save raw JSON results for debugging
+  
+  # Google Places Crawler (compass/crawler-google-places)
+  google_places:
+    enabled: true
+    max_places_per_search: 10
+  
+  # Google Maps with Contact Details (lukaskrivka/google-maps-with-contact-details)
+  google_maps_contacts:
+    enabled: true
+    max_contact_enrichments: 50
+  
+  # LinkedIn Premium Actor (bebity/linkedin-premium-actor)
+  linkedin_premium:
+    enabled: true
+    max_linkedin_searches: 20
+    max_profiles_per_company: 5
+
 # Quality configuration
 dedupe:
   keys: ["siren", "domain_root", "best_email"]
@@ -498,6 +526,16 @@ The system is built as a modular pipeline with discrete steps. Each step can be 
 **Input**: Filtered dataset
 **Output**: API-enriched data
 **Configuration**: `api.endpoints`
+
+#### 2b. api.apify
+**Purpose**: Enrich business data using Apify platform scrapers
+**Input**: Addresses from step 7 (enrich.address)
+**Output**: Comprehensive business information (contacts, executives, ratings)
+**Configuration**: `apify.enabled`, `apify.google_places`, `apify.google_maps_contacts`, `apify.linkedin_premium`
+**Scrapers Used**:
+- **Google Places Crawler** (compass/crawler-google-places): Searches addresses for business info
+- **Google Maps Contact Details** (lukaskrivka/google-maps-with-contact-details): Enriches with contact details
+- **LinkedIn Premium Actor** (bebity/linkedin-premium-actor): Gets executive information (CEO, CFO, Directors)
 
 #### 3. http.static
 **Purpose**: Scrape static web pages
