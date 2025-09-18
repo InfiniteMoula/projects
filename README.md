@@ -22,7 +22,9 @@ A comprehensive data scraping and enrichment system designed to collect, process
 ## Features
 
 - **Multi-source data collection**: Web scraping, API calls, RSS feeds, PDF extraction
+- **Apify platform integration**: Google Places, Google Maps, and LinkedIn scrapers
 - **Intelligent enrichment**: Email discovery, domain validation, phone normalization
+- **Executive data**: CEO, CFO, Directors and Founder information via LinkedIn
 - **Quality control**: Scoring, validation checks
 - **Flexible profiles**: Quick, standard, and deep processing modes
 - **Budget management**: Control resource usage (time, RAM, HTTP requests)
