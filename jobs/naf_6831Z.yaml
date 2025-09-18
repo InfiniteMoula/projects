@@ -57,9 +57,9 @@ kpi_targets:
   min_lines_per_s: 50
 
 budgets:
-  max_http_bytes: 15728640  # 15MB - increased for professional sites
-  max_http_requests: 750    # increased for professional directories
-  time_budget_min: 45       # increased time budget
-  ram_mb: 2048
+  max_http_bytes: 52428800   # 50MB - supports Google Maps enrichment
+  max_http_requests: 2000    # sufficient for web scraping and Google Maps searches
+  time_budget_min: 90        # extended time for comprehensive enrichment
+  ram_mb: 4096
 
 retention_days: 30
