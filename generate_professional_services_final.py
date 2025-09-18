@@ -3,7 +3,52 @@
 
 from pathlib import Path
 from typing import Dict, List
-import create_job
+import unicodedata
+
+NAF_LABELS: Dict[str, str] = {
+    "6920Z": "Activités comptables",
+    "6910Z": "Activités juridiques",
+    "6922Z": "Conseils pour les affaires et autres conseils de gestion",
+    "6201Z": "Programmation informatique",
+    "6202A": "Conseil en systèmes et logiciels informatiques",
+    "6202B": "Tierce maintenance de systèmes et d'applications informatiques",
+    "7311Z": "Activités des agences de publicité",
+    "7312Z": "Régie publicitaire de médias",
+    "7320Z": "Études de marché et sondages",
+    "7111Z": "Activités d'architecture",
+    "7112A": "Activité des géomètres",
+    "7112B": "Ingénierie, études techniques",
+    "6831Z": "Agences immobilières",
+    "6832A": "Administration d'immeubles et autres biens immobiliers",
+    "6832B": "Supports juridiques de gestion de patrimoine immobilier",
+    "7022Z": "Conseil pour les affaires et autres conseils de gestion",
+    "7021Z": "Conseil en relations publiques et communication",
+    "7410Z": "Activités spécialisées de design",
+    "7420Z": "Activités photographiques",
+    "7430Z": "Traduction et interprétation",
+    "8621Z": "Activité des médecins généralistes",
+    "8622A": "Activités de radiodiagnostic et de radiothérapie",
+    "8622B": "Activités chirurgicales",
+    "8622C": "Autres activités des médecins spécialistes",
+    "8623Z": "Pratique dentaire",
+    "6622Z": "Activités des agents et courtiers d'assurances",
+    "6619A": "Supports juridiques de gestion de patrimoine mobilier",
+}
+
+
+def _canonical_naf_label(naf_code: str, raw_label: str) -> str:
+    label = NAF_LABELS.get(naf_code, raw_label)
+    normalized = unicodedata.normalize("NFC", label)
+    if "\uFFFD" in normalized:
+        raise ValueError(f"Replacement character found in NAF label {naf_code}: {raw_label!r}")
+    return normalized
+
+
+def generate_niche_name(naf_code: str) -> str:
+    """Generate a consistent niche identifier from a NAF code."""
+    naf_clean = naf_code.replace('.', '').replace(' ', '').upper()
+    return f"naf_{naf_clean}"
+
 
 # Comprehensive NAF codes for professional services with relevant websites
 PROFESSIONAL_SERVICES = {
@@ -302,10 +347,13 @@ PROFESSIONAL_SERVICES = {
     }
 }
 
+for _code, _info in PROFESSIONAL_SERVICES.items():
+    _info["name"] = _canonical_naf_label(_code, _info.get("name", _code))
+
 
 def create_professional_yaml_content(naf_code: str, service_info: Dict) -> str:
     """Create properly formatted YAML content for a professional service."""
-    niche_name = f"naf_{naf_code.replace('.', '').replace(' ', '').upper()}"
+    niche_name = generate_niche_name(naf_code)
     
     # Create proper YAML format for seeds
     seeds_yaml = "\n".join(f'    - "{seed}"' for seed in service_info["seeds"])
@@ -381,7 +429,7 @@ def generate_all_professional_jobs():
     print(f"Generating {len(PROFESSIONAL_SERVICES)} professional services job templates...")
     
     for naf_code, service_info in PROFESSIONAL_SERVICES.items():
-        niche_name = f"naf_{naf_code.replace('.', '').replace(' ', '').upper()}"
+        niche_name = generate_niche_name(naf_code)
         job_file = jobs_dir / f"{niche_name}.yaml"
         
         content = create_professional_yaml_content(naf_code, service_info)
@@ -389,7 +437,7 @@ def generate_all_professional_jobs():
         with open(job_file, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        print(f"✓ Created {job_file.name} for {service_info['name']} ({naf_code})")
+        print(f"[OK] Created {job_file.name} for {service_info['name']} ({naf_code})")
     
     print(f"\nSuccessfully generated {len(PROFESSIONAL_SERVICES)} job templates in {jobs_dir}")
     
@@ -400,7 +448,7 @@ def generate_all_professional_jobs():
         f.write("This document lists all generated professional services job templates.\n\n")
         
         for naf_code, service_info in PROFESSIONAL_SERVICES.items():
-            niche_name = f"naf_{naf_code.replace('.', '').replace(' ', '').upper()}"
+            niche_name = generate_niche_name(naf_code)
             f.write(f"## {naf_code} - {service_info['name']}\n")
             f.write(f"- **File**: `{niche_name}.yaml`\n")
             f.write(f"- **Seeds**: {len(service_info['seeds'])} websites\n")
@@ -408,7 +456,7 @@ def generate_all_professional_jobs():
             f.write(f"- **Example websites**: {', '.join(service_info['seeds'][:3])}\n")
             f.write("\n")
     
-    print(f"✓ Created summary file: {summary_file.name}")
+    print(f"[OK] Created summary file: {summary_file.name}")
 
 
 if __name__ == "__main__":

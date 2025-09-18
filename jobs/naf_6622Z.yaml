@@ -1,47 +1,49 @@
-niche: naf_6622Z
+niche: "naf_6622Z"
+
 filters:
-  naf_include:
-  - 6622Z
+  naf_include: ["6622Z"]
   active_only: false
-profile: standard
-steps_order: []
+  # regions: ["75","92","93","94"]   # (optionnel) filtre par préfixe CP
+
+profile: "standard"
+steps_order: []               # laisse le CLI gérer l'ordre
+
 http:
-  seeds: []
+  seeds:
+    - "https://www.agea.fr"
+    - "https://www.courtiers-assurance.fr"
+    - "https://www.assurance.fr"
   per_domain_rps: 0.5
+
 sitemap:
-  domains: []
-  allow_patterns: []
-  max_urls: 0
+  domains:
+    - "agea.fr"
+    - "courtiers-assurance.fr"
+  allow_patterns: ["contact","mentions","about","equipe","team","avocats","experts","services","cabinet"]
+  max_urls: 500
+
 feeds:
   urls: []
 pdf:
   urls: []
 api:
   endpoints: []
+
 enrich:
-  directory_csv: ''
-  email_formats_priority:
-  - contact@{d}
-  - info@{d}
-  - bonjour@{d}
-  - cabinet@{d}
-  - secretariat@{d}
+  directory_csv: ""
+  email_formats_priority: ["contact@{d}","info@{d}","bonjour@{d}","cabinet@{d}","secretariat@{d}"]
+
 dedupe:
-  keys:
-  - siren
-  - domain_root
-  - best_email
-  - telephone_norm
+  keys: ["siren","domain_root","best_email","telephone_norm"]
   fuzzy: false
+
 scoring:
-  weights:
-    contactability:50: null
-    unicity:20: null
-    completeness:20: null
-    freshness:10: null
+  weights: {contactability:50, unicity:20, completeness:20, freshness:10}
+
 output:
-  dir: out/naf_6622Z
-  lang: fr
+  dir: "out/naf_6622Z"
+  lang: "fr"
+
 kpi_targets:
   min_quality_score: 80
   max_dup_pct: 1.5
@@ -49,9 +51,11 @@ kpi_targets:
   min_domain_resolved_pct: 80
   min_email_plausible_pct: 60
   min_lines_per_s: 50
+
 budgets:
-  max_http_bytes: 52428800
-  max_http_requests: 2000
-  time_budget_min: 90
+  max_http_bytes: 52428800   # 50MB - supports Google Maps enrichment
+  max_http_requests: 2000    # sufficient for web scraping and Google Maps searches
+  time_budget_min: 90        # extended time for comprehensive enrichment
   ram_mb: 4096
+
 retention_days: 30
