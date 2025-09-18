@@ -1,0 +1,46 @@
+niche: "apify_example"
+
+# Data filtering
+filters:
+  naf_include: ["6920Z"]  # Legal services example
+  active_only: true
+  regions: ["75"]  # Paris
+
+# Processing profile
+profile: "standard"
+
+# Apify scrapers configuration
+apify:
+  enabled: true  # Enable Apify agents
+  max_addresses: 10  # Limit addresses for testing/cost control
+  save_raw_results: true  # Save raw JSON results for debugging
+  
+  # Google Places Crawler (compass/crawler-google-places)
+  # Searches for addresses and gets all business information
+  google_places:
+    enabled: true
+    max_places_per_search: 5  # Limit results per address search
+  
+  # Google Maps with Contact Details (lukaskrivka/google-maps-with-contact-details)
+  # Enriches places with detailed contact information
+  google_maps_contacts:
+    enabled: true
+    max_contact_enrichments: 20  # Limit contact detail enrichments
+  
+  # LinkedIn Premium Actor (bebity/linkedin-premium-actor)
+  # Gets CEO, CFO, Directors and Founder information
+  linkedin_premium:
+    enabled: true
+    max_linkedin_searches: 5   # Limit LinkedIn searches (this costs credits)
+    max_profiles_per_company: 3  # Max executive profiles per company
+
+# Budget control
+budget:
+  time_budget_min: 60  # 1 hour maximum
+  ram_mb: 2048        # 2GB RAM limit
+
+# Output settings
+retention_days: 30
+
+# Note: Make sure to set APIFY_API_TOKEN in your .env file
+# Get your token from: https://console.apify.com/account/integrations
