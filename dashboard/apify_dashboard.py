@@ -181,7 +181,10 @@ class ApifyDashboard:
             failed_ops = stats.get('failed_operations', 0)
             total_ops = success_ops + failed_ops
             
-            detailed_metrics[scraper_type] = {
+            # Convert enum to string for JSON serialization
+            scraper_key = scraper_type.value if hasattr(scraper_type, 'value') else str(scraper_type)
+            
+            detailed_metrics[scraper_key] = {
                 'operations': {
                     'total': total_ops,
                     'successful': success_ops,

@@ -86,7 +86,7 @@ class MonitoringMetrics:
                     stats['total_cost'] += event.data['cost']
                 if 'duration' in event.data:
                     stats['total_duration'] += event.data['duration']
-                if 'quality_score' in event.data:
+                if 'quality_score' in event.data and event.data['quality_score'] is not None:
                     self._update_quality_average(stats, event.data['quality_score'])
                     
             elif event.event_type == MonitoringEventType.SCRAPER_ERROR:
@@ -209,10 +209,24 @@ class ApifyMonitor:
         if 'results' in results and results['results']:
             controller_key = 'google_maps' if 'google' in session['scraper_type'].value else 'linkedin'
             controller = self.quality_controllers.get(controller_key)
-            if controller:
+            if controller and hasattr(controller, 'validate_extraction_results'):
                 try:
+                    # Convert results to DataFrame if needed
+                    import pandas as pd
+                    
+                    results_data = results['results']
+                    if isinstance(results_data, list):
+                        if all(isinstance(item, dict) for item in results_data):
+                            # Convert list of dicts to DataFrame
+                            df_results = pd.DataFrame(results_data)
+                        else:
+                            # Simple list - create basic DataFrame
+                            df_results = pd.DataFrame({'result': results_data})
+                    else:
+                        df_results = results_data
+                    
                     validated_results = controller.validate_extraction_results(
-                        results['results'], session['scraper_type'].value
+                        df_results, session['scraper_type'].value
                     )
                     quality_report = controller.generate_quality_report(validated_results)
                     quality_score = quality_report.get('summary', {}).get('average_score', 0)
@@ -227,6 +241,9 @@ class ApifyMonitor:
                     ))
                 except Exception as e:
                     logger.warning(f"Quality check failed for {session_id}: {e}")
+                    # Fall back to basic quality assessment
+                    results_count = len(results.get('results', []))
+                    quality_score = min(100, results_count * 10)  # Simple scoring
         
         event = MonitoringEvent(
             timestamp=time.time(),
@@ -314,8 +331,11 @@ class ApifyMonitor:
                 'active_sessions': len(self.session_data),
                 'recent_alerts': len(recent_alerts)
             },
-            'scraper_stats': dict(self.metrics.scraper_stats),
-            'quality_metrics': dict(self.quality_metrics),
+            'scraper_stats': {
+                (k.value if hasattr(k, 'value') else str(k)): v 
+                for k, v in self.metrics.scraper_stats.items()
+            },
+            'quality_metrics': dict(self.metrics.quality_metrics),
             'recent_alerts': [
                 {
                     'type': alert.alert_type,
