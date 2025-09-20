@@ -1,122 +1,84 @@
-# Data Scraper and Enrichment Pipeline
+# Business Intelligence Data Pipeline
 
-A comprehensive data scraping and enrichment system designed to collect, process, and enrich business data from various sources including websites, APIs, and databases. The system is particularly optimized for processing French business data (SIRENE database) and enriching it with contact information, domain data, and quality scoring.
+A comprehensive business data intelligence pipeline that transforms raw business databases into enriched, actionable datasets. Specifically designed for French business data (SIRENE database), this system automatically discovers and enriches business information with contact details, executive information, and quality scoring through advanced web scraping and API integrations.
+
+## What This Pipeline Does
+
+**Transform raw business data into comprehensive business intelligence:**
+
+- **Input**: French business database (SIRENE format) with basic company information
+- **Process**: Multi-source data enrichment using web scraping, APIs, and AI-powered extraction
+- **Output**: Complete business profiles with contact information, executive details, and quality scores
+
+**Key Business Value:**
+- 🏢 **Complete Business Profiles**: Company details, contact information, executive data
+- 📞 **Contact Discovery**: Emails, phone numbers, websites from multiple sources  
+- 👔 **Executive Information**: CEO, CFO, Directors via LinkedIn integration
+- 🌐 **Multi-Source Enrichment**: Google Maps, LinkedIn, direct web scraping
+- 📊 **Quality Control**: Automated scoring, validation, and deduplication
+- 📈 **Scalable Processing**: Batch processing with budget and performance controls
 
 ## Table of Contents
 
+- [What This Pipeline Does](#what-this-pipeline-does)
 - [Features](#features)
-- [Installation](#installation)
-- [Environment Setup](#environment-setup)
 - [Quick Start](#quick-start)
-- [Command Line Interface](#command-line-interface)
+- [Installation](#installation)
 - [Processing Profiles](#processing-profiles)
+- [Documentation](#documentation)
+- [Command Line Interface](#command-line-interface)
 - [Job Configuration](#job-configuration)
 - [Pipeline Steps](#pipeline-steps)
 - [Batch Processing](#batch-processing)
-- [Input/Output Formats](#inputoutput-formats)
 - [Budget and KPI System](#budget-and-kpi-system)
 - [Examples](#examples)
 - [Troubleshooting](#troubleshooting)
-- [Development](#development)
 
 ## Features
 
-- **Multi-source data collection**: Web scraping, API calls, RSS feeds, PDF extraction
-- **Apify platform integration**: Google Places, Google Maps, and LinkedIn scrapers
-- **Intelligent enrichment**: Email discovery, domain validation, phone normalization
-- **Executive data**: CEO, CFO, Directors and Founder information via LinkedIn
-- **Quality control**: Scoring, validation checks
-- **Flexible profiles**: Quick, standard, and deep processing modes
-- **Budget management**: Control resource usage (time, RAM, HTTP requests)
-- **Batch processing**: Process multiple NAF codes efficiently
-- **Export formats**: CSV, Parquet, with quality reports (HTML/PDF)
-- **Comprehensive logging**: Detailed execution tracking and debugging
-
-## Installation
-
-### Prerequisites
-
-- Python 3.8+
-- At least 2GB RAM (configurable)
-- Internet connection for external data sources
-
-### Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Required Packages
-
-The system requires these key dependencies:
-- `pandas==2.2.2` - Data manipulation
-- `httpx==0.27.0` - HTTP client
-- `beautifulsoup4==4.12.3` - HTML parsing
-- `PyYAML==6.0.2` - Configuration files
-- `psutil==5.9.8` - System monitoring
-- `weasyprint==66.0` - PDF generation
-- `dnspython==2.6.1` - DNS resolution
-
-## Environment Setup
-
-### 1. Create Environment File
-
-Copy the example environment file and configure it:
-
-```bash
-cp .env.example .env
-```
-
-### 2. Configure Environment Variables
-
-Edit `.env` file with your settings:
-
-```bash
-# API Keys
-HUNTER_API_KEY=your_hunter_api_key_here
-
-# Apify API Configuration
-APIFY_API_TOKEN=your_apify_api_token_here
-
-# Proxy Settings (optional)
-HTTP_PROXY=http://proxy:port
-HTTPS_PROXY=https://proxy:port
-```
-
-### 3. Environment Variables Explained
-
-- **HUNTER_API_KEY**: API key for Hunter.io email validation service (optional)
-- **APIFY_API_TOKEN**: API token for Apify platform scrapers (get from https://console.apify.com/account/integrations)
-- **HTTP_PROXY/HTTPS_PROXY**: Proxy configuration for HTTP requests (optional)
+- **🤖 Intelligent Data Enrichment**: Multi-source business intelligence gathering
+- **🌐 Advanced Web Scraping**: Static pages, dynamic content, sitemaps, PDFs, RSS feeds
+- **🔧 Apify Platform Integration**: Professional Google Places, Google Maps, and LinkedIn scrapers
+- **📧 Contact Discovery**: Smart email discovery, phone normalization, website validation  
+- **👔 Executive Intelligence**: CEO, CFO, Directors and Founder information via LinkedIn
+- **🎯 Quality Control**: Comprehensive scoring, validation checks, and confidence ratings
+- **⚡ Flexible Processing**: Quick, standard, and deep processing modes
+- **💰 Budget Management**: Control resource usage (time, RAM, HTTP requests, API costs)
+- **🔄 Batch Processing**: Process multiple business categories (NAF codes) efficiently
+- **📊 Rich Exports**: CSV, Parquet, with interactive quality reports (HTML/PDF)
+- **🔍 Comprehensive Logging**: Detailed execution tracking and debugging capabilities
 
 ## Quick Start
 
-### 1. Prepare Input Data
+Get started in under 5 minutes with a sample dataset:
 
-Ensure you have a SIRENE dataset in Parquet or CSV format:
-
+### 1. Install and Setup
 ```bash
-# Download or prepare your SIRENE data
-# File should contain at least: siren, naf_code, denomination columns
+# Clone and setup
+git clone <repository-url>
+cd projects
+pip install -r requirements.txt
+
+# Configure environment (optional for basic use)
+cp .env.example .env
+# Edit .env with your API keys (APIFY_API_TOKEN, HUNTER_API_KEY)
 ```
 
-### 2. Run a Quick Test
-
+### 2. Run Your First Enrichment
 ```bash
+# Quick test with sample data (no API keys required)
 python builder_cli.py run-profile \
   --job jobs/experts_comptables.yaml \
-  --input data/sirene_latest.parquet \
-  --out out/test_run \
+  --input data/sirene_sample.parquet \
+  --out out/first_test \
   --profile quick \
-  --sample 50 \
+  --sample 10 \
   --dry-run
 ```
 
-### 3. Full Processing
-
-Remove `--dry-run` and `--sample` for full processing:
-
+### 3. Full Processing Example
 ```bash
+# Complete enrichment with all features
 python builder_cli.py run-profile \
   --job jobs/experts_comptables.yaml \
   --input data/sirene_latest.parquet \
@@ -124,19 +86,107 @@ python builder_cli.py run-profile \
   --profile standard
 ```
 
+📋 **Output**: Find enriched data in `out/experts_comptables/dataset.csv` with complete business profiles!
+
+## Installation
+
+### System Requirements
+
+- **Python**: 3.8 or higher
+- **Memory**: 2GB RAM minimum (4GB recommended for standard/deep profiles)
+- **Storage**: SSD recommended for better performance
+- **Network**: Internet connection for web scraping and API access
+
+### Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+**Key Dependencies**: `pandas`, `httpx`, `beautifulsoup4`, `PyYAML`, `psutil`, `weasyprint`, `apify-client`
+
+### Environment Setup (Optional)
+
+For advanced features, configure API access:
+
+```bash
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your credentials:
+# APIFY_API_TOKEN=your_apify_token_here     # For Apify platform scrapers
+# HUNTER_API_KEY=your_hunter_key_here       # For email validation
+# HTTP_PROXY=http://proxy:port              # Optional proxy settings
+```
+
+> **Note**: Basic web scraping works without API keys. Apify integration requires an [Apify account](https://console.apify.com/account/integrations).
+
+## Processing Profiles
+
+Choose the right processing profile based on your needs and available time:
+
+### Quick Profile (⚡ 5-15 minutes)
+**Best for**: Fast processing, basic enrichment, testing
+```yaml
+steps: ["dumps.collect", "api.collect", "normalize.standardize", "quality.checks", "quality.score", "package.export"]
+```
+- ✅ Basic data collection and normalization
+- ✅ Quality scoring and validation  
+- ✅ Fast turnaround for testing
+- ❌ No web scraping or external APIs
+
+### Standard Profile (🚀 20-60 minutes)  
+**Best for**: Balanced processing with comprehensive enrichment
+```yaml
+steps: ["dumps.collect", "api.collect", "feeds.collect", "parse.jsonld", "normalize.standardize", 
+        "enrich.address", "api.apify", "enrich.google_maps", "enrich.domain", "enrich.site", 
+        "enrich.dns", "enrich.email", "enrich.phone", "quality.checks", "quality.score", "package.export"]
+```
+- ✅ Web scraping and sitemap discovery
+- ✅ **Apify platform integration** (Google Maps, LinkedIn)
+- ✅ Domain and email enrichment
+- ✅ Contact discovery and validation
+- ✅ Comprehensive quality control
+
+### Deep Profile (🔍 1-3 hours)
+**Best for**: Maximum data extraction, comprehensive analysis
+```yaml
+# Includes all Standard features plus:
+# - Headless browser automation
+# - PDF document processing  
+# - Advanced HTML parsing
+# - Extended quality analysis
+```
+- ✅ Everything from Standard profile
+- ✅ JavaScript-heavy website processing
+- ✅ PDF document extraction
+- ✅ Advanced content parsing
+- ✅ Maximum data completeness
+
+## Documentation
+
+### 📚 Complete Documentation Suite
+
+- **[Apify Setup & Usage Guide](docs/apify-setup-guide.md)** - Complete Apify platform integration
+- **[Scraping Methods Guide](docs/scraping-methods-guide.md)** - Web scraping, APIs, and data sources  
+- **[Technical Implementation Details](docs/technical-implementation-details.md)** - Technical implementation details
+- **[Apify Troubleshooting](docs/apify-troubleshooting.md)** - Advanced troubleshooting and optimization
+- **[Apify Implementation Details](docs/apify-implementation-details.md)** - Deep technical architecture
+
+### 🔧 Quick References
+
+- **[Legal Compliance](docs/legal.md)** - Robots.txt, ToS compliance, data usage guidelines
+- **[Package Export Documentation](package/README.md)** - Export formats and quality reporting
+
 ## Command Line Interface
 
 ### Main Commands
-
-The CLI provides three main commands:
 
 ```bash
 python builder_cli.py {run-step,run-profile,batch,resume}
 ```
 
-### 1. run-profile
-
-Execute a complete processing profile:
+### run-profile - Execute Complete Processing
 
 ```bash
 python builder_cli.py run-profile [OPTIONS]
@@ -147,994 +197,208 @@ python builder_cli.py run-profile [OPTIONS]
 - `--out OUT`: Output directory
 - `--profile {quick,standard,deep}`: Processing profile
 
-**Optional Arguments:**
+**Common Options:**
 - `--input INPUT`: Input data file (Parquet/CSV)
-- `--run-id RUN_ID`: Custom run identifier
 - `--dry-run`: Simulate execution without processing
 - `--sample SAMPLE`: Limit processing to N records
-- `--time-budget-min TIME_BUDGET`: Maximum execution time in minutes
 - `--workers WORKERS`: Number of worker threads (default: 8)
-- `--json`: Output results in JSON format
-- `--resume`: Resume previous interrupted run
-- `--verbose`: Enable detailed logging with all process details
-- `--debug`: Enable debug mode with important debug information
-- `--max-ram-mb MAX_RAM`: RAM budget in MB (0 = unlimited)
-- `--explain`: Show execution plan without running
+- `--verbose`: Enable detailed logging
+- `--debug`: Enable debug mode
 
-### 2. run-step
-
-Execute a single pipeline step:
+### batch - Process Multiple Business Categories
 
 ```bash
-python builder_cli.py run-step --step STEP_NAME [OPTIONS]
+python builder_cli.py batch --naf 6920Z --naf 4329A --input data.parquet --output-dir out/
 ```
 
-Available steps: `dumps.collect`, `api.collect`, `http.static`, `http.sitemap`, `headless.collect`, `feeds.collect`, `pdf.collect`, `parse.html`, `parse.jsonld`, `parse.pdf`, `normalize.standardize`, `enrich.email`, `quality.score`, `package.export`, etc.
+### Examples
 
-### 3. batch
-
-Process multiple NAF codes in batch:
-
+**Quick test:**
 ```bash
-python builder_cli.py batch [OPTIONS]
+python builder_cli.py run-profile --job jobs/experts_comptables.yaml --input data.parquet --out out/test --profile quick --sample 10 --debug
 ```
 
-**Required Arguments:**
-- `--naf NAF_CODES`: NAF code(s) to process (can be repeated)
-- `--input INPUT`: Input data file
-- `--output-dir OUTPUT_DIR`: Base output directory
-
-**Optional Arguments:**
-- `--template TEMPLATE`: Job template file (default: job_template.yaml)
-- `--profile {quick,standard,deep}`: Processing profile (default: quick)
-- `--jobs-dir JOBS_DIR`: Generated job files directory (default: jobs_generated)
-- `--dry-run`: Generate jobs without executing
-- `--continue-on-error`: Continue processing if some jobs fail
-- `--json`: Output results in JSON format
-- `--verbose`: Enable detailed logging with all process details  
-- `--debug`: Enable debug mode with important debug information
-
-## Debug and Verbose Modes
-
-The CLI provides two levels of enhanced logging to help with debugging and monitoring:
-
-### Debug Mode (`--debug`)
-Enables important debug information at crucial pipeline steps:
-- Step start/completion notifications with status
-- Pipeline configuration overview 
-- Budget and KPI status tracking
-- RAM usage monitoring
-- Error summaries and step results
-- Final pipeline statistics
-
+**Production run:**
 ```bash
-python builder_cli.py run-profile \
-  --job jobs/my_job.yaml \
-  --input data/sirene.parquet \
-  --out out/debug_run \
-  --profile quick \
-  --debug
-```
-
-### Verbose Mode (`--verbose`) 
-Enables comprehensive detailed logging of all process details:
-- All debug mode information plus:
-- Detailed step configurations and context
-- Complete step output and results
-- Full job configuration details  
-- Complete KPI and budget breakdowns
-- Full pipeline execution summary
-- Enhanced log formatting with file/line numbers
-
-```bash
-python builder_cli.py run-profile \
-  --job jobs/my_job.yaml \
-  --input data/sirene.parquet \
-  --out out/verbose_run \
-  --profile standard \
-  --verbose
-```
-
-### Debug Mode Usage Examples
-
-**Basic debug run:**
-```bash
-python builder_cli.py run-profile \
-  --job jobs/experts_comptables.yaml \
-  --input data/sirene.parquet \
-  --out out/debug_test \
-  --profile quick \
-  --debug \
-  --sample 10
-```
-
-**Verbose batch processing:**
-```bash
-python builder_cli.py batch \
-  --naf 6920Z --naf 4329A \
-  --input data/sirene.parquet \
-  --output-dir out/verbose_batch \
-  --verbose \
-  --sample 50
-```
-
-**Debug mode with budget constraints:**
-```bash
-python builder_cli.py run-profile \
-  --job jobs/btp_idf.yaml \
-  --input data/sirene.parquet \
-  --out out/debug_budget \
-  --profile standard \
-  --debug \
-  --max-ram-mb 1024 \
-  --time-budget-min 15
-```
-
-### Debug vs Verbose vs Normal Modes
-
-| Mode | Log Level | Output | Use Case |
-|------|-----------|---------|----------|
-| **Normal** (default) | WARNING | Errors and warnings only | Production runs |
-| **Debug** (`--debug`) | INFO | Important debug information | Troubleshooting and monitoring |
-| **Verbose** (`--verbose`) | DEBUG | All process details | Deep debugging and development |
-
-**Example outputs:**
-
-Normal mode:
-```
-# Only shows warnings/errors
-```
-
-Debug mode:
-```
-2025-01-15T10:30:00 [INFO] [DEBUG] Pipeline configuration:
-2025-01-15T10:30:00 [INFO] [DEBUG] - Profile: quick
-2025-01-15T10:30:00 [INFO] [DEBUG] - Total steps: 7
-2025-01-15T10:30:01 [INFO] [DEBUG] Starting step 'dumps.collect'
-2025-01-15T10:30:01 [INFO] [DEBUG] Step 'dumps.collect' completed with status: OK
-```
-
-Verbose mode:
-```
-2025-01-15T10:30:00 [DEBUG] [VERBOSE] Job configuration: { "niche": "test", ... }
-2025-01-15T10:30:01 [DEBUG] [VERBOSE] Step configuration keys: ['niche', 'filters']
-2025-01-15T10:30:01 [DEBUG] [VERBOSE] Complete step result: {"step": "dumps.collect", "status": "OK", ...}
-```
-
-### 4. resume
-
-Resume an interrupted run:
-
-```bash
-python builder_cli.py resume [OPTIONS]
-```
-
-## Processing Profiles
-
-The system offers three predefined processing profiles with different levels of depth and resource usage:
-
-### Quick Profile
-**Use case**: Fast processing, basic enrichment
-**Steps**: Data collection → Normalization → Basic quality checks → Export
-**Time**: ~5-15 minutes
-**Resources**: Low
-
-```yaml
-steps: [
-  "dumps.collect",
-  "api.collect", 
-  "normalize.standardize",
-  "quality.checks",
-  "quality.score",
-  "package.export"
-]
-```
-
-### Standard Profile  
-**Use case**: Balanced processing with web scraping
-**Steps**: Quick + Web scraping + Domain/Email enrichment
-**Time**: ~20-60 minutes
-**Resources**: Medium
-
-```yaml
-steps: [
-  "dumps.collect",
-  "api.collect",
-  "http.static",
-  "http.sitemap", 
-  "parse.jsonld",
-  "normalize.standardize",
-  "enrich.domain",
-  "enrich.site",
-  "enrich.dns",
-  "enrich.email",
-  "enrich.phone",
-  "quality.checks",
-  "quality.score",
-  "package.export"
-]
-```
-
-### Deep Profile
-**Use case**: Comprehensive processing with PDF/HTML extraction
-**Steps**: Standard + Headless browsing + PDF processing + HTML parsing
-**Time**: ~1-3 hours
-**Resources**: High
-
-```yaml
-steps: [
-  "dumps.collect",
-  "api.collect",
-  "http.static",
-  "http.sitemap",
-  "headless.collect",
-  "pdf.collect",
-  "parse.pdf",
-  "parse.html", 
-  "parse.jsonld",
-  "normalize.standardize",
-  "enrich.domain",
-  "enrich.site",
-  "enrich.dns",
-  "enrich.email",
-  "enrich.phone",
-  "quality.checks",
-  "quality.score", 
-  "package.export"
-]
+python builder_cli.py run-profile --job jobs/experts_comptables.yaml --input data.parquet --out out/production --profile standard
 ```
 
 ## Job Configuration
 
-Jobs are configured using YAML files that define the processing parameters, data sources, and quality targets.
-
-### Basic Job Structure
+Jobs are configured using YAML files. Basic structure:
 
 ```yaml
 niche: "job_name"
 
 # Data filtering
 filters:
-  naf_include: ["6920Z"]  # NAF codes to include
-  active_only: false      # Only active businesses
-  regions: ["75", "92"]   # Postal code prefixes (optional)
+  naf_include: ["6920Z"]  # Business category codes
+  regions: ["75", "92"]   # Geographic regions (optional)
 
-# Processing profile
-profile: "standard"
-
-# Web scraping configuration
-http:
-  seeds: ["https://example.com"]  # Starting URLs
-  per_domain_rps: 0.5            # Requests per second limit
-
-# Sitemap processing
-sitemap:
-  domains: ["example.com"]
-  allow_patterns: ["contact", "about"]
-  max_urls: 500
-
-# RSS/Atom feeds collection
-feeds:
-  urls: ["https://example.com/feed.xml"]
-  max_entries: 50
-  timeout: 30
-
-# PDF document collection
-pdf:
-  urls: ["https://example.com/brochure.pdf"]
-  max_size_mb: 10
-  timeout: 60
-
-# Data enrichment
-enrich:
-  directory_csv: ""  # External directory file
-  email_formats_priority: ["contact@{d}", "info@{d}"]
-
-# Apify scrapers configuration
+# Apify platform integration
 apify:
-  enabled: true  # Enable/disable Apify agents
-  max_addresses: 50  # Limit addresses processed (cost control)
-  save_raw_results: true  # Save raw JSON results for debugging
-  
-  # Google Places Crawler (compass/crawler-google-places)
+  enabled: true
+  max_addresses: 50
   google_places:
     enabled: true
     max_places_per_search: 10
-  
-  # Google Maps with Contact Details (lukaskrivka/google-maps-with-contact-details)
-  google_maps_contacts:
-    enabled: true
-    max_contact_enrichments: 50
-  
-  # LinkedIn Premium Actor (bebity/linkedin-premium-actor)
   linkedin_premium:
     enabled: true
     max_linkedin_searches: 20
-    max_profiles_per_company: 5
 
-# Quality configuration
-dedupe:
-  keys: ["siren", "domain_root", "best_email"]
-  fuzzy: false
-
-scoring:
-  weights: {contactability:50, unicity:20, completeness:20, freshness:10}
-
-# Output configuration
-output:
-  dir: "out/job_name"
-  lang: "fr"
-
-# Quality targets (KPIs)
+# Quality targets
 kpi_targets:
   min_quality_score: 80
-  max_dup_pct: 1.5
-  min_url_valid_pct: 85
-  min_domain_resolved_pct: 80
   min_email_plausible_pct: 60
-  min_lines_per_s: 50
 
 # Resource budgets
 budgets:
-  max_http_bytes: 10485760    # 10MB
-  max_http_requests: 500      # Maximum HTTP requests
-  time_budget_min: 30         # 30 minutes
-  ram_mb: 2048               # 2GB RAM limit
-
-retention_days: 30
+  max_http_requests: 2000
+  time_budget_min: 90
+  ram_mb: 4096
 ```
-
-### Creating Custom Jobs
-
-1. **Copy the template**:
-   ```bash
-   cp job_template.yaml jobs/my_custom_job.yaml
-   ```
-
-2. **Edit the configuration**:
-   - Update `niche` name
-   - Set appropriate `naf_include` codes
-   - Configure `http.seeds` for web scraping
-   - Adjust `budgets` for your resources
-   - Set `kpi_targets` for quality requirements
-
-3. **Test with dry run**:
-   ```bash
-   python builder_cli.py run-profile \
-     --job jobs/my_custom_job.yaml \
-     --input data/sirene.parquet \
-     --out out/test \
-     --profile quick \
-     --dry-run \
-     --sample 10
-   ```
 
 ## Pipeline Steps
 
-The system is built as a modular pipeline with discrete steps. Each step can be run independently or as part of a profile.
+The system processes data through these main stages:
 
-### Data Collection Steps
+### 1. Data Collection
+- **dumps.collect**: Load and filter SIRENE database
+- **api.collect**: External API data collection
+- **api.apify**: Apify platform scrapers (Google Maps, LinkedIn)
+- **http.static**: Web scraping
+- **feeds.collect**: RSS/Atom feeds
 
-#### 1. dumps.collect
-**Purpose**: Load and filter input data (SIRENE database)
-**Input**: Raw SIRENE Parquet/CSV file
-**Output**: Filtered dataset based on NAF codes and regions
-**Configuration**: `filters.naf_include`, `filters.regions`, `filters.active_only`
+### 2. Data Processing  
+- **parse.html/pdf**: Extract structured data
+- **normalize.standardize**: Clean and standardize data
+- **enrich.address**: Address-based enrichment
+- **enrich.google_maps**: Google Maps integration
+- **enrich.domain/email/phone**: Contact discovery
 
-#### 2. api.collect  
-**Purpose**: Collect data from external APIs
-**Input**: Filtered dataset
-**Output**: API-enriched data
-**Configuration**: `api.endpoints`
-
-#### 2b. api.apify
-**Purpose**: Enrich business data using Apify platform scrapers
-**Input**: Addresses from step 7 (enrich.address)
-**Output**: Comprehensive business information (contacts, executives, ratings)
-**Configuration**: `apify.enabled`, `apify.google_places`, `apify.google_maps_contacts`, `apify.linkedin_premium`
-**Scrapers Used**:
-- **Google Places Crawler** (compass/crawler-google-places): Searches addresses for business info
-- **Google Maps Contact Details** (lukaskrivka/google-maps-with-contact-details): Enriches with contact details
-- **LinkedIn Premium Actor** (bebity/linkedin-premium-actor): Gets executive information (CEO, CFO, Directors)
-
-#### 3. http.static
-**Purpose**: Scrape static web pages
-**Input**: URLs from dataset or seeds
-**Output**: Downloaded HTML content
-**Configuration**: `http.seeds`, `http.per_domain_rps`
-
-#### 4. http.sitemap
-**Purpose**: Discover URLs from sitemaps
-**Input**: Domain list
-**Output**: Discovered URLs
-**Configuration**: `sitemap.domains`, `sitemap.allow_patterns`, `sitemap.max_urls`
-
-#### 5. headless.collect
-**Purpose**: Scrape dynamic content using headless browser
-**Input**: URLs requiring JavaScript
-**Output**: Rendered HTML content
-**Dependencies**: Requires `http.static`
-
-#### 6. feeds.collect
-**Purpose**: Collect data from RSS/Atom feeds
-**Input**: Feed URLs
-**Output**: Feed content and metadata
-**Configuration**: `feeds.urls`
-
-#### 7. pdf.collect
-**Purpose**: Download and collect PDF documents
-**Input**: PDF URLs
-**Output**: PDF files
-**Configuration**: `pdf.urls`
-
-### Data Parsing Steps
-
-#### 8. parse.html
-**Purpose**: Extract structured data from HTML content
-**Input**: HTML files from web scraping
-**Output**: Structured contact information
-**Dependencies**: `http.static`, `headless.collect`
-
-#### 9. parse.jsonld
-**Purpose**: Extract JSON-LD structured data
-**Input**: HTML with JSON-LD markup
-**Output**: Structured metadata
-**Dependencies**: `http.static`, `http.sitemap`
-
-#### 10. parse.pdf
-**Purpose**: Extract text and data from PDF documents
-**Input**: PDF files
-**Output**: Extracted text and metadata
-**Dependencies**: `pdf.collect`
-
-### Data Processing Steps
-
-#### 11. normalize.standardize
-**Purpose**: Standardize and clean collected data
-**Input**: Raw collected data from multiple sources
-**Output**: Standardized, consistent dataset
-**Processing**: Phone normalization, email validation, address parsing
-
-### Data Enrichment Steps
-
-#### 12. enrich.domain
-**Purpose**: Discover and validate domains for businesses
-**Input**: Standardized dataset
-**Output**: Domain information per business
-**Dependencies**: `normalize.standardize`
-
-#### 13. enrich.site
-**Purpose**: Probe websites for additional information
-**Input**: Domain list
-**Output**: Website metadata, technology stack
-**Dependencies**: `enrich.domain`
-
-#### 14. enrich.dns
-**Purpose**: Perform DNS validation and checks
-**Input**: Domain list
-**Output**: DNS validation results
-**Dependencies**: `enrich.domain`
-
-#### 15. enrich.email
-**Purpose**: Discover and validate email addresses
-**Input**: Domains and contact patterns
-**Output**: Validated email addresses
-**Dependencies**: `enrich.dns`
-**Configuration**: `enrich.email_formats_priority`
-
-#### 16. enrich.phone
-**Purpose**: Enrich and validate phone numbers
-**Input**: Phone data from various sources
-**Output**: Validated, normalized phone numbers
-**Dependencies**: `enrich.email`
-
-### Quality Control Steps
-
-#### 17. quality.checks
-**Purpose**: Perform data quality validation
-**Input**: Enriched dataset
-**Output**: Quality metrics and validation results
-**Dependencies**: `normalize.standardize`
-
-#### 18. quality.score
-**Purpose**: Calculate quality scores for each record
-**Input**: Enriched or normalized dataset
-**Output**: Dataset with quality scores
-**Configuration**: `scoring.weights`
-**Dependencies**: `normalize.standardize`
-
-**Note**: Deduplication has been removed from the pipeline to preserve more data. Quality scoring now works directly with enriched or normalized data.
-
-### Export Step
-
-#### 19. package.export
-**Purpose**: Generate final outputs and reports
-**Input**: Scored dataset
-**Output**: CSV, Parquet, HTML/PDF reports, metadata
-**Dependencies**: `quality.score`
-**Files generated**:
-  - `dataset.csv` - Final CSV export
-  - `dataset.parquet` - Final Parquet export
-  - `data_quality_report.html` - Interactive quality report
-  - `data_quality_report.pdf` - PDF quality report
-  - `manifest.json` - Run metadata and quality metrics
-  - `sha256.txt` - File checksums
+### 3. Quality Control
+- **quality.checks**: Data validation
+- **quality.score**: Quality scoring
+- **package.export**: Final export with reports
 
 ## Batch Processing
 
-The batch processing feature allows you to process multiple NAF codes efficiently in a single operation.
-
-### Basic Batch Usage
+Process multiple business categories efficiently:
 
 ```bash
+# Process multiple NAF codes
 python builder_cli.py batch \
   --naf 6920Z \
   --naf 4329A \
-  --naf 43 \
-  --input data/sirene_latest.parquet \
-  --output-dir out/batch_results
+  --naf 6910Z \
+  --input data/sirene.parquet \
+  --output-dir out/professional_services \
+  --profile standard \
+  --continue-on-error
 ```
 
-### Batch Options
-
-- **Multiple NAF codes**: Use `--naf` multiple times
-- **Custom template**: `--template custom_template.yaml`
-- **Processing profile**: `--profile {quick,standard,deep}`
-- **Dry run**: `--dry-run` to generate jobs without executing
-- **Error handling**: `--continue-on-error` to process all codes even if some fail
-- **Resource limits**: `--sample`, `--workers`, `--max-ram-mb`
-
-### Generated Structure
-
-Batch processing creates organized output:
-
+Creates organized output structure:
 ```
-output-dir/
-├── naf_6920Z/           # Job output for NAF 6920Z
-│   ├── dataset.csv
-│   ├── dataset.parquet
-│   ├── data_quality_report.html
-│   └── logs/
-├── naf_4329A/           # Job output for NAF 4329A
-│   ├── dataset.csv
-│   ├── dataset.parquet
-│   └── logs/
-└── ...
-
-jobs_generated/          # Generated job files
-├── naf_6920Z.yaml
-├── naf_4329A.yaml
+out/professional_services/
+├── naf_6920Z/          # Accountants
+├── naf_4329A/          # Construction  
+├── naf_6910Z/          # Legal services
 └── ...
 ```
-
-### Advanced Batch Examples
-
-**Generate jobs only (dry run)**:
-```bash
-python builder_cli.py batch \
-  --naf 6920Z --naf 4329A \
-  --input data/sirene.parquet \
-  --output-dir out/batch \
-  --dry-run \
-  --verbose
-```
-
-**With error tolerance**:
-```bash
-python builder_cli.py batch \
-  --naf 6920Z --naf 4329A --naf 43 \
-  --input data/sirene.parquet \
-  --output-dir out/batch \
-  --continue-on-error \
-  --verbose
-```
-
-**JSON output for automation**:
-```bash
-python builder_cli.py batch \
-  --naf 6920Z --naf 4329A \
-  --input data/sirene.parquet \
-  --output-dir out/batch \
-  --json > batch_results.json
-```
-
-## Input/Output Formats
-
-### Input Data Requirements
-
-The system expects input data in Parquet or CSV format with these required columns:
-
-**Minimum required columns**:
-- `siren`: Business identifier (SIREN number)
-- `naf_code`: NAF activity code
-- `denomination`: Business name
-
-**Optional but recommended columns**:
-- `adresse`: Business address
-- `code_postal`: Postal code
-- `ville`: City
-- `telephone`: Phone number
-- `site_web`: Website URL
-- `email`: Email address
-- `effectif`: Employee count
-- `date_creation`: Creation date
-
-### Output Data Structure
-
-The final dataset contains enriched data with these key columns:
-
-**Business Information**:
-- `siren`, `denomination`, `naf_code`
-- `adresse_complete`, `code_postal`, `ville`
-- `effectif`, `date_creation`
-
-**Contact Information**:
-- `telephone_norm`: Normalized phone number
-- `best_email`: Best discovered email address
-- `site_web`: Website URL
-- `domain_root`: Root domain
-
-**Enrichment Data**:
-- `domain_valid`: Domain validation status
-- `dns_resolved`: DNS resolution status
-- `email_plausible`: Email plausibility score
-- `contact_score`: Contact information quality
-
-**Quality Metrics**:
-- `quality_score`: Overall quality score (0-100)
-- `completeness`: Data completeness percentage
-- `contactability`: Contact information availability
-- `freshness`: Data recency score
-
-### Export Files
-
-Each successful run generates these files:
-
-1. **dataset.csv**: Final enriched dataset in CSV format
-2. **dataset.parquet**: Final enriched dataset in Parquet format  
-3. **data_quality_report.html**: Interactive quality report
-4. **data_quality_report.pdf**: PDF version of quality report
-5. **manifest.json**: Run metadata and quality metrics
-6. **sha256.txt**: File integrity checksums
-7. **logs/run_id.jsonl**: Detailed execution logs
 
 ## Budget and KPI System
 
-The system includes comprehensive budget management and quality KPI tracking.
-
-### Budget Configuration
-
-Control resource usage with budget limits:
+Control resource usage and quality targets:
 
 ```yaml
+# Resource budgets
 budgets:
-  max_http_bytes: 10485760    # Maximum HTTP download (10MB)
-  max_http_requests: 500      # Maximum HTTP requests
-  time_budget_min: 30         # Maximum execution time (30 min)
-  ram_mb: 2048               # Maximum RAM usage (2GB)
-```
+  max_http_requests: 2000    # HTTP request limit
+  max_http_bytes: 52428800   # 50MB download limit
+  time_budget_min: 90        # 90 minute time limit
+  ram_mb: 4096              # 4GB RAM limit
 
-### KPI Targets
-
-Define quality targets for automatic validation:
-
-```yaml
+# Quality targets  
 kpi_targets:
-  min_quality_score: 80          # Minimum average quality score
-  max_dup_pct: 1.5              # Maximum duplicate percentage  
-  min_url_valid_pct: 85         # Minimum valid URL percentage
-  min_domain_resolved_pct: 80   # Minimum DNS resolution rate
-  min_email_plausible_pct: 60   # Minimum plausible email rate
-  min_lines_per_s: 50           # Minimum processing speed
+  min_quality_score: 80          # Minimum quality score
+  min_email_plausible_pct: 60    # Minimum email discovery rate
+  min_domain_resolved_pct: 80    # Minimum domain validation rate
 ```
-
-### Budget Monitoring
-
-Monitor resource usage during execution:
-
-- **HTTP Budget**: Tracks download size and request count
-- **Time Budget**: Monitors execution time vs. limits
-- **RAM Budget**: Monitors memory usage
-
-Budget exceeded scenarios will:
-1. Log warnings when approaching limits
-2. Gracefully stop processing when limits exceeded
-3. Include budget statistics in final report
-
-### KPI Validation
-
-After processing, KPIs are automatically calculated and validated:
-
-- **Quality Score**: Average quality across all records
-- **Duplicate Rate**: Percentage of duplicate records found
-- **URL Validation**: Percentage of valid/accessible URLs
-- **Domain Resolution**: Percentage of domains that resolve via DNS
-- **Email Plausibility**: Percentage of emails passing validation
-- **Processing Speed**: Records processed per second
-
-KPI failures will be reported in the logs and final report.
 
 ## Examples
 
-### Example 1: Quick Expert-Comptable Processing
-
-Process expert-comptable businesses with minimal resources:
-
+### Professional Services Processing
 ```bash
-python builder_cli.py run-profile \
-  --job jobs/experts_comptables.yaml \
-  --input data/sirene_latest.parquet \
-  --out out/experts_comptables \
-  --profile quick \
-  --sample 100 \
-  --verbose
-```
-
-### Example 2: Deep BTP Processing
-
-Comprehensive processing for construction businesses:
-
-```bash
-python builder_cli.py run-profile \
-  --job jobs/btp_idf.yaml \
-  --input data/sirene_idf.parquet \
-  --out out/btp_deep \
-  --profile deep \
-  --workers 4 \
-  --max-ram-mb 4096
-```
-
-### Example 3: Batch NAF Processing
-
-Process multiple NAF codes with error tolerance:
-
-```bash
+# Accountants and legal services
 python builder_cli.py batch \
-  --naf 6920Z \
-  --naf 4329A \
-  --naf 4711F \
-  --naf 43 \
-  --input data/sirene_latest.parquet \
-  --output-dir out/multi_naf \
-  --profile standard \
-  --continue-on-error \
-  --verbose
-```
-
-### Example 4: Custom Job Creation
-
-Create and run a custom job for a specific niche:
-
-```bash
-# 1. Create job from template
-python create_job.py jobs/my_niche.yaml
-
-# 2. Edit the generated file
-# Edit naf_include, http.seeds, budgets, etc.
-
-# 3. Test with dry run
-python builder_cli.py run-profile \
-  --job jobs/my_niche.yaml \
+  --naf 6920Z --naf 6910Z \
   --input data/sirene.parquet \
-  --out out/test \
-  --profile quick \
-  --dry-run \
-  --sample 10
-
-# 4. Full processing
-python builder_cli.py run-profile \
-  --job jobs/my_niche.yaml \
-  --input data/sirene.parquet \
-  --out out/my_niche \
+  --output-dir out/professional \
   --profile standard
 ```
 
-### Example 5: Resume Interrupted Processing
-
-Resume a processing run that was interrupted:
-
+### High-Volume Processing
 ```bash
-python builder_cli.py resume \
-  --job jobs/experts_comptables.yaml \
-  --out out/experts_comptables \
-  --run-id abc123def456
+# Large dataset with memory management
+python builder_cli.py run-profile \
+  --job jobs/large_dataset.yaml \
+  --input data/sirene_full.parquet \
+  --out out/large \
+  --profile standard \
+  --workers 4 \
+  --max-ram-mb 8192
+```
+
+### Development Testing
+```bash
+# Quick development test
+python builder_cli.py run-profile \
+  --job jobs/test.yaml \
+  --input data/sample.parquet \
+  --out out/dev \
+  --profile quick \
+  --sample 20 \
+  --debug
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-#### 1. Memory Issues
-**Problem**: Process killed due to high memory usage
-
-**Solutions**:
-- Reduce `--workers` (default: 8)
-- Set `--max-ram-mb` to limit memory
-- Use `--sample` for testing with smaller datasets
-- Choose `quick` profile instead of `deep`
-
+**Memory Issues**: Reduce `--workers`, set `--max-ram-mb`, use `--sample`
 ```bash
-# Memory-optimized run
-python builder_cli.py run-profile \
-  --job jobs/my_job.yaml \
-  --input data/sirene.parquet \
-  --out out/test \
-  --profile quick \
-  --workers 2 \
-  --max-ram-mb 1024
+python builder_cli.py run-profile --job jobs/my_job.yaml --workers 2 --max-ram-mb 2048 --sample 100
 ```
 
-#### 2. Network/HTTP Issues
-**Problem**: HTTP requests failing or timing out
-
-**Solutions**:
-- Check internet connectivity
-- Configure proxy settings in `.env`
-- Reduce `http.per_domain_rps` in job config
-- Check if target domains are blocking requests
-
-#### 3. Budget Exceeded Errors
-**Problem**: Processing stops due to budget limits
-
-**Solutions**:
-- Increase budget limits in job configuration
-- Use `--time-budget-min 0` to disable time limits  
-- Reduce data size with `--sample`
-- Optimize job configuration
-
-#### 4. Input Data Issues
-**Problem**: Missing required columns or data format errors
-
-**Solutions**:
-- Verify input file has required columns: `siren`, `naf_code`, `denomination`
-- Check file format (CSV/Parquet)
-- Validate data encoding (UTF-8)
-
+**Network Issues**: Check connectivity, configure proxy in `.env`
 ```bash
-# Check input file structure
-python -c "import pandas as pd; print(pd.read_parquet('data/sirene.parquet').columns.tolist())"
+# In .env file:
+HTTP_PROXY=http://proxy:port
 ```
 
-#### 5. Job Configuration Errors
-**Problem**: YAML syntax errors or invalid configuration
+**API Rate Limits**: Reduce request rates in job configuration
+```yaml
+apify:
+  google_places:
+    max_places_per_search: 5  # Reduce from default 10
+```
 
-**Solutions**:
-- Validate YAML syntax
-- Check against `job_template.yaml`
-- Use `--explain` to see execution plan
-- Start with `--dry-run`
+**No Results**: Verify input data format and required columns (`siren`, `naf_code`, `denomination`)
 
 ### Debug Mode
 
-Enable maximum verbosity for debugging:
-
+Enable comprehensive logging:
 ```bash
-python builder_cli.py run-profile \
-  --job jobs/my_job.yaml \
-  --input data/sirene.parquet \
-  --out out/debug \
-  --profile quick \
-  --debug \
-  --sample 5
-```
-
-### Verbose Mode
-
-Enable comprehensive detailed logging:
-
-```bash
-python builder_cli.py run-profile \
-  --job jobs/my_job.yaml \
-  --input data/sirene.parquet \
-  --out out/verbose \
-  --profile quick \
-  --verbose \
-  --sample 5
-```
-
-### Log Analysis
-
-Check execution logs for detailed information:
-
-```bash
-# View latest log file
-ls -la out/my_run/logs/
-tail -f out/my_run/logs/run_123abc.jsonl
+python builder_cli.py run-profile --job jobs/debug.yaml --input data.parquet --out out/debug --debug --verbose --sample 5
 ```
 
 ### Performance Optimization
 
-**For faster processing**:
-- Use `quick` profile for basic processing
-- Increase `--workers` (but watch memory usage)
-- Use SSD storage for temp files
-- Ensure sufficient RAM
-
-**For memory optimization**:
-- Reduce `--workers`
-- Set `--max-ram-mb` limit
-- Process in smaller batches
-- Use `--sample` for testing
-
-## Development
-
-### Project Structure
-
-```
-├── builder_cli.py          # Main CLI interface
-├── create_job.py           # Job generation utilities
-├── job_template.yaml       # Default job template
-├── requirements.txt        # Python dependencies
-├── .env.example           # Environment template
-├── jobs/                  # Job configuration files
-├── utils/                 # Core utilities
-│   ├── pipeline.py        # Pipeline orchestration
-│   ├── config.py          # Configuration management
-│   ├── budget_middleware.py # Budget and KPI tracking
-│   └── ...
-├── dumps/                 # Data collection modules
-├── parse/                 # Data parsing modules (Python package)
-├── enrich/                # Data enrichment modules (Python package)
-├── quality/               # Quality control modules
-├── package/               # Export and reporting
-└── tests/                 # Test suite
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run specific test file
-python -m pytest tests/test_builder_cli.py -v
-
-# Run with coverage
-python -m pytest tests/ --cov=. --cov-report=html
-```
-
-### Contributing
-
-1. **Code Style**: Follow PEP 8 standards
-2. **Testing**: Add tests for new features
-3. **Documentation**: Update README and docstrings
-4. **Logging**: Use the pipeline logging system
-
-### Adding New Pipeline Steps
-
-1. Create module in appropriate directory
-2. Implement `run(config, context)` function
-3. Add to `STEP_REGISTRY` in `builder_cli.py`
-4. Define dependencies in `STEP_DEPENDENCIES`
-5. Add tests in `tests/`
-
-### Custom Enrichment Modules
-
-```python
-# Example: enrich/custom_enrichment.py
-def run(config, context):
-    """Custom enrichment step"""
-    logger = context.get("logger")
-    input_path = context["outdir_path"] / "previous_step.parquet"
-    
-    # Process data
-    df = pd.read_parquet(input_path)
-    # ... enrichment logic ...
-    
-    # Save results
-    output_path = context["outdir_path"] / "custom_enriched.parquet"
-    df.to_parquet(output_path)
-    
-    return {"status": "OK", "records_processed": len(df)}
-```
+- **Use SSD storage** for temporary files
+- **Increase workers** (but watch memory usage): `--workers 8`
+- **Optimize job configuration** (reduce unnecessary enrichment steps)
+- **Use appropriate profile** (quick vs standard vs deep)
 
 ---
 
-For more detailed information, see the documentation in the `/docs` directory:
-- [docs/implementation-guide.md](docs/implementation-guide.md) - Comprehensive implementation guide
-- [docs/google-maps.md](docs/google-maps.md) - Google Maps integration guide  
-- [docs/address-search.md](docs/address-search.md) - Address search functionality
-- [docs/legal.md](docs/legal.md) - Legal compliance requirements
-- [package/README.md](package/README.md) - Export system documentation
-
-For support or questions, please check the logs first, then refer to the troubleshooting section above.
+For detailed documentation on specific features, see the [Documentation](#documentation) section above.

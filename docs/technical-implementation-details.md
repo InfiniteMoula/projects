@@ -1,4 +1,17 @@
-# Implementation Guide
+# Technical Implementation Details
+
+This document provides comprehensive technical documentation on the implementation of features and enhancements in the business intelligence data pipeline.
+
+> **Note**: For setup and usage information, see the [main README](../README.md) and [setup guides](apify-setup-guide.md). This document focuses on technical implementation details for developers.
+
+## Summary of Key Enhancements
+
+This pipeline has been enhanced with:
+- **Multi-source data enrichment** using Apify platform (Google Maps, LinkedIn)
+- **Advanced web scraping** with respect for robots.txt and rate limiting
+- **Intelligent contact discovery** through pattern matching and validation
+- **Quality scoring framework** with confidence ratings and validation
+- **Comprehensive business intelligence** gathering and export capabilities
 
 ## Overview
 
