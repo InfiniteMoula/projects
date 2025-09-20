@@ -15,7 +15,7 @@ import json
 import time
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import pandas as pd
 from apify_client import ApifyClient
 
@@ -23,6 +23,7 @@ from utils import io
 from utils.parquet import ParquetBatchWriter
 from utils.address_processor import AddressProcessor
 from utils.company_name_processor import CompanyNameProcessor
+from utils.quality_controller import GoogleMapsQualityController, LinkedInQualityController
 
 
 def _get_apify_client() -> ApifyClient:
@@ -358,6 +359,232 @@ def _merge_apify_results(addresses_df: pd.DataFrame,
     return enriched_df
 
 
+def _apply_quality_validation(df: pd.DataFrame, places_results: List[Dict], 
+                            contact_results: List[Dict], linkedin_results: List[Dict],
+                            quality_config: dict, outdir: Path) -> Tuple[pd.DataFrame, Dict]:
+    """
+    Apply quality validation and confidence scoring to Apify results.
+    
+    Args:
+        df: DataFrame with enriched results
+        places_results: Raw Google Places results
+        contact_results: Raw Google Maps contact results
+        linkedin_results: Raw LinkedIn results
+        quality_config: Quality control configuration
+        outdir: Output directory for quality reports
+        
+    Returns:
+        Tuple of (enhanced_df, quality_reports)
+    """
+    print("Applying quality validation to Apify results...")
+    
+    quality_reports = {}
+    
+    # Initialize quality controllers
+    google_maps_controller = GoogleMapsQualityController(quality_config)
+    linkedin_controller = LinkedInQualityController(quality_config)
+    
+    # Validate Google Maps results (places + contacts)
+    if places_results or contact_results:
+        combined_google_results = places_results + contact_results
+        if combined_google_results:
+            validated_google_results, google_report = google_maps_controller.validate_google_maps_batch(
+                combined_google_results
+            )
+            quality_reports['google_maps'] = google_report
+            
+            # Export Google Maps quality dashboard data
+            google_dashboard_path = outdir / "google_maps_quality_dashboard.json"
+            google_maps_controller.export_quality_dashboard_data(google_report, str(google_dashboard_path))
+            print(f"Google Maps quality report saved to {google_dashboard_path}")
+    
+    # Validate LinkedIn results
+    if linkedin_results:
+        validated_linkedin_results, linkedin_report = linkedin_controller.validate_linkedin_batch(
+            linkedin_results
+        )
+        quality_reports['linkedin'] = linkedin_report
+        
+        # Export LinkedIn quality dashboard data
+        linkedin_dashboard_path = outdir / "linkedin_quality_dashboard.json"
+        linkedin_controller.export_quality_dashboard_data(linkedin_report, str(linkedin_dashboard_path))
+        print(f"LinkedIn quality report saved to {linkedin_dashboard_path}")
+    
+    # Enhance DataFrame with quality scores
+    df = _add_quality_scores_to_dataframe(df, places_results, contact_results, linkedin_results, 
+                                         google_maps_controller, linkedin_controller)
+    
+    # Apply quality-based filtering if configured
+    if quality_config.get("filter_low_quality", False):
+        min_score = quality_config.get("min_quality_score", 0.5)
+        original_count = len(df)
+        df = df[df.get('overall_quality_score', 0.0) >= min_score]
+        filtered_count = len(df)
+        print(f"Quality filtering: kept {filtered_count}/{original_count} records (min score: {min_score})")
+    
+    # Generate combined quality summary
+    combined_summary_path = outdir / "apify_quality_summary.json"
+    _generate_combined_quality_summary(quality_reports, combined_summary_path)
+    
+    return df, quality_reports
+
+
+def _add_quality_scores_to_dataframe(df: pd.DataFrame, places_results: List[Dict], 
+                                   contact_results: List[Dict], linkedin_results: List[Dict],
+                                   google_controller: GoogleMapsQualityController,
+                                   linkedin_controller: LinkedInQualityController) -> pd.DataFrame:
+    """Add quality scores and validation results to the main DataFrame."""
+    
+    # Initialize quality columns
+    df['google_maps_quality_score'] = 0.0
+    df['linkedin_quality_score'] = 0.0
+    df['overall_quality_score'] = 0.0
+    df['quality_confidence_level'] = 'low'
+    df['quality_issues'] = ''
+    df['quality_recommendations'] = ''
+    
+    # Process Google Maps quality scores
+    if places_results or contact_results:
+        google_results_map = {}
+        
+        # Map results by search terms or business names
+        for result in places_results + contact_results:
+            search_term = result.get('searchString', '')
+            title = result.get('title', '')
+            if search_term:
+                google_results_map[search_term] = result
+            elif title:
+                google_results_map[title] = result
+        
+        # Match with DataFrame rows
+        for idx, row in df.iterrows():
+            address = row.get('adresse', '')
+            business_name = row.get('apify_business_names', '').split(';')[0] if row.get('apify_business_names') else ''
+            
+            matching_result = None
+            if address in google_results_map:
+                matching_result = google_results_map[address]
+            elif business_name and business_name in google_results_map:
+                matching_result = google_results_map[business_name]
+            
+            if matching_result:
+                validation = google_controller._validate_single_result(matching_result, 'google_maps_contacts')
+                df.at[idx, 'google_maps_quality_score'] = validation.overall_score
+                df.at[idx, 'quality_confidence_level'] = validation.confidence_level
+                df.at[idx, 'quality_issues'] = '; '.join(validation.validation_issues[:3])  # Top 3 issues
+                df.at[idx, 'quality_recommendations'] = '; '.join(validation.recommendations[:2])  # Top 2 recommendations
+    
+    # Process LinkedIn quality scores
+    if linkedin_results:
+        linkedin_results_map = {}
+        
+        # Map results by company names
+        for result in linkedin_results:
+            company_name = result.get('companyName', '')
+            if company_name:
+                if company_name not in linkedin_results_map:
+                    linkedin_results_map[company_name] = []
+                linkedin_results_map[company_name].append(result)
+        
+        # Match with DataFrame rows
+        for idx, row in df.iterrows():
+            company_names = []
+            
+            # Try multiple company name fields
+            for field in ['company_name', 'denomination', 'raison_sociale']:
+                if field in row and row[field]:
+                    company_names.append(str(row[field]))
+            
+            if row.get('apify_business_names'):
+                company_names.extend(row['apify_business_names'].split(';'))
+            
+            best_linkedin_score = 0.0
+            for company_name in company_names:
+                company_name = company_name.strip()
+                if company_name in linkedin_results_map:
+                    # Get best profile for this company
+                    company_profiles = linkedin_results_map[company_name]
+                    for profile in company_profiles:
+                        validation = linkedin_controller._validate_single_result(profile, 'linkedin_premium')
+                        if validation.overall_score > best_linkedin_score:
+                            best_linkedin_score = validation.overall_score
+            
+            df.at[idx, 'linkedin_quality_score'] = best_linkedin_score
+    
+    # Calculate overall quality score
+    for idx, row in df.iterrows():
+        google_score = row.get('google_maps_quality_score', 0.0)
+        linkedin_score = row.get('linkedin_quality_score', 0.0)
+        
+        # Weighted average (Google Maps weighted higher for contact info)
+        overall_score = (google_score * 0.7) + (linkedin_score * 0.3)
+        df.at[idx, 'overall_quality_score'] = overall_score
+        
+        # Update confidence level based on overall score
+        if overall_score >= 0.8:
+            df.at[idx, 'quality_confidence_level'] = 'high'
+        elif overall_score >= 0.6:
+            df.at[idx, 'quality_confidence_level'] = 'medium'
+        else:
+            df.at[idx, 'quality_confidence_level'] = 'low'
+    
+    return df
+
+
+def _generate_combined_quality_summary(quality_reports: Dict, output_path: Path) -> None:
+    """Generate a combined quality summary from all sources."""
+    
+    summary = {
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'sources': list(quality_reports.keys()),
+        'overall_stats': {},
+        'source_details': {}
+    }
+    
+    total_records = 0
+    total_valid = 0
+    all_scores = []
+    
+    for source, report in quality_reports.items():
+        total_records += report.total_records
+        total_valid += report.valid_records
+        all_scores.extend([report.average_score] * report.total_records)
+        
+        summary['source_details'][source] = {
+            'total_records': report.total_records,
+            'valid_records': report.valid_records,
+            'validation_rate': round(report.validation_rate * 100, 1),
+            'average_score': round(report.average_score * 100, 1),
+            'confidence_distribution': report.confidence_distribution,
+            'top_issues': report.common_issues[:3]
+        }
+    
+    # Calculate overall statistics
+    summary['overall_stats'] = {
+        'total_records': total_records,
+        'total_valid': total_valid,
+        'overall_validation_rate': round((total_valid / total_records * 100) if total_records > 0 else 0, 1),
+        'overall_average_score': round((sum(all_scores) / len(all_scores) * 100) if all_scores else 0, 1)
+    }
+    
+    # Generate overall recommendations
+    recommendations = []
+    if total_records > 0:
+        validation_rate = total_valid / total_records
+        if validation_rate < 0.8:
+            recommendations.append("Consider improving data source quality")
+        if len(all_scores) > 0 and sum(all_scores) / len(all_scores) < 0.6:
+            recommendations.append("Review extraction and validation methods")
+    
+    summary['recommendations'] = recommendations
+    
+    # Save summary
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    
+    print(f"Combined quality summary saved to {output_path}")
+
+
 def run(cfg: dict, ctx: dict) -> dict:
     """
     Run Apify agents to enrich business data.
@@ -504,6 +731,13 @@ def run(cfg: dict, ctx: dict) -> dict:
     # Merge results
     enriched_df = _merge_apify_results(df, places_results, contact_results, linkedin_results)
     
+    # Apply quality control and validation
+    quality_config = apify_config.get("quality_control", {})
+    if quality_config.get("enabled", True):
+        enriched_df, quality_reports = _apply_quality_validation(
+            enriched_df, places_results, contact_results, linkedin_results, quality_config, outdir
+        )
+    
     # Save results
     output_path = outdir / "apify_enriched.parquet"
     enriched_df.to_parquet(output_path)
@@ -536,5 +770,13 @@ def run(cfg: dict, ctx: dict) -> dict:
             "qualified_input_records": input_data['qualified_records'],
             "qualification_rate": input_data['qualified_records'] / input_data['total_records'] if input_data['total_records'] > 0 else 0.0
         })
+    
+    # Add quality validation stats if available
+    if 'quality_reports' in locals():
+        overall_quality_stats = {}
+        for source, report in quality_reports.items():
+            overall_quality_stats[f"{source}_validation_rate"] = round(report.validation_rate * 100, 1)
+            overall_quality_stats[f"{source}_average_score"] = round(report.average_score * 100, 1)
+        result_stats["quality_validation_stats"] = overall_quality_stats
     
     return result_stats
