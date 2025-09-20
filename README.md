@@ -169,8 +169,9 @@ steps: ["dumps.collect", "api.collect", "feeds.collect", "parse.jsonld", "normal
 
 - **[Apify Setup & Usage Guide](docs/apify-setup-guide.md)** - Complete Apify platform integration
 - **[Scraping Methods Guide](docs/scraping-methods-guide.md)** - Web scraping, APIs, and data sources  
-- **[Implementation Guide](docs/implementation-guide.md)** - Technical implementation details
+- **[Technical Implementation Details](docs/technical-implementation-details.md)** - Technical implementation details
 - **[Apify Troubleshooting](docs/apify-troubleshooting.md)** - Advanced troubleshooting and optimization
+- **[Apify Implementation Details](docs/apify-implementation-details.md)** - Deep technical architecture
 
 ### 🔧 Quick References
 
