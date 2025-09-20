@@ -21,6 +21,8 @@ from apify_client import ApifyClient
 
 from utils import io
 from utils.parquet import ParquetBatchWriter
+from utils.address_processor import AddressProcessor
+from utils.company_name_processor import CompanyNameProcessor
 
 
 def _get_apify_client() -> ApifyClient:
@@ -30,6 +32,95 @@ def _get_apify_client() -> ApifyClient:
         raise ValueError("APIFY_API_TOKEN environment variable is required")
     
     return ApifyClient(api_token)
+
+
+def _prepare_input_data(df: pd.DataFrame, cfg: dict) -> Dict:
+    """
+    Prepare and enhance input data for Apify agents.
+    
+    This function processes addresses and company names to optimize them
+    for better search results from the Apify scrapers.
+    """
+    print("Preparing input data with address and company name optimization...")
+    
+    # Initialize processors
+    address_processor = AddressProcessor()
+    company_processor = CompanyNameProcessor()
+    
+    # Process addresses if available
+    address_column = None
+    for col in ['adresse', 'adresse_complete', 'address']:
+        if col in df.columns:
+            address_column = col
+            break
+    
+    if address_column:
+        print(f"Processing addresses from column: {address_column}")
+        df_with_addresses = address_processor.process_dataframe(df, address_column)
+        
+        # Filter by address quality if configured
+        min_quality = cfg.get('input_preparation', {}).get('min_address_quality', 0.3)
+        high_quality_addresses = df_with_addresses[
+            df_with_addresses['address_quality_score'] >= min_quality
+        ]
+        print(f"Filtered to {len(high_quality_addresses)} addresses with quality >= {min_quality}")
+    else:
+        print("No address column found")
+        df_with_addresses = df
+        high_quality_addresses = df
+    
+    # Process company names if available  
+    company_column = None
+    for col in ['denomination', 'raison_sociale', 'company_name', 'nom_entreprise']:
+        if col in df.columns:
+            company_column = col
+            break
+    
+    if company_column:
+        print(f"Processing company names from column: {company_column}")
+        df_with_companies = company_processor.process_dataframe(high_quality_addresses, company_column)
+        
+        # Filter by company confidence if configured
+        min_confidence = cfg.get('input_preparation', {}).get('min_company_confidence', 0.3)
+        high_quality_companies = df_with_companies[
+            df_with_companies['company_confidence'] >= min_confidence
+        ]
+        print(f"Filtered to {len(high_quality_companies)} companies with confidence >= {min_confidence}")
+    else:
+        print("No company name column found")
+        df_with_companies = high_quality_addresses
+        high_quality_companies = high_quality_addresses
+    
+    # Calculate overall input data quality score
+    quality_scores = []
+    for idx, row in high_quality_companies.iterrows():
+        address_score = row.get('address_quality_score', 0.0)
+        company_score = row.get('company_confidence', 0.0)
+        
+        # Weighted average (addresses are more important for Google Maps)
+        overall_score = (address_score * 0.7) + (company_score * 0.3)
+        quality_scores.append(overall_score)
+    
+    high_quality_companies = high_quality_companies.copy()
+    high_quality_companies['input_quality_score'] = quality_scores
+    
+    # Sort by quality score (best first)
+    high_quality_companies = high_quality_companies.sort_values(
+        'input_quality_score', ascending=False
+    )
+    
+    return {
+        'processed_df': high_quality_companies,
+        'address_processor': address_processor,
+        'company_processor': company_processor,
+        'total_records': len(df),
+        'qualified_records': len(high_quality_companies),
+        'quality_stats': {
+            'mean_quality': float(high_quality_companies['input_quality_score'].mean()) if len(high_quality_companies) > 0 else 0.0,
+            'min_quality': float(high_quality_companies['input_quality_score'].min()) if len(high_quality_companies) > 0 else 0.0,
+            'max_quality': float(high_quality_companies['input_quality_score'].max()) if len(high_quality_companies) > 0 else 0.0
+        }
+    }
 
 
 def _run_google_places_crawler(addresses: List[str], client: ApifyClient, cfg: dict) -> List[Dict]:
@@ -339,9 +430,41 @@ def run(cfg: dict, ctx: dict) -> dict:
         df = df.head(max_addresses)
         print(f"Limited to {max_addresses} addresses for Apify processing")
     
-    # Extract addresses and company names
-    addresses = df['adresse'].tolist()
-    company_names = df.get('company_name', df.get('denomination', df.get('raison_sociale', pd.Series(dtype=str)))).fillna('').tolist()
+    # Prepare and enhance input data
+    try:
+        input_data = _prepare_input_data(df, cfg)
+        processed_df = input_data['processed_df']
+        
+        print(f"Input preparation completed:")
+        print(f"  - Total records: {input_data['total_records']}")
+        print(f"  - Qualified records: {input_data['qualified_records']}")
+        print(f"  - Quality stats: {input_data['quality_stats']}")
+        
+        # Use processed data for scraping
+        if processed_df.empty:
+            empty_path = outdir / "apify_no_qualified_data.parquet"
+            pd.DataFrame().to_parquet(empty_path)
+            return {"file": str(empty_path), "status": "NO_QUALIFIED_DATA"}
+        
+        # Update df to use processed version
+        df = processed_df
+        
+    except Exception as e:
+        print(f"Warning: Input preparation failed: {e}")
+        print("Proceeding with original data...")
+    
+    # Extract addresses and company names (use enhanced versions if available)
+    address_column = 'address_primary' if 'address_primary' in df.columns else 'adresse'
+    company_column = 'company_primary' if 'company_primary' in df.columns else None
+    
+    if company_column is None:
+        for col in ['company_name', 'denomination', 'raison_sociale']:
+            if col in df.columns:
+                company_column = col
+                break
+    
+    addresses = df[address_column].fillna('').tolist() if address_column in df.columns else []
+    company_names = df[company_column].fillna('').tolist() if company_column else []
     
     # Initialize Apify client
     try:
@@ -395,7 +518,8 @@ def run(cfg: dict, ctx: dict) -> dict:
         raw_path = outdir / "apify_raw_results.json"
         io.write_json(raw_path, raw_results)
     
-    return {
+    # Calculate quality metrics
+    result_stats = {
         "file": str(output_path),
         "status": "SUCCESS",
         "places_found": len(places_results),
@@ -403,3 +527,14 @@ def run(cfg: dict, ctx: dict) -> dict:
         "linkedin_profiles": len(linkedin_results),
         "addresses_processed": len(df)
     }
+    
+    # Add input quality stats if available
+    if 'input_data' in locals():
+        result_stats.update({
+            "input_quality_stats": input_data['quality_stats'],
+            "total_input_records": input_data['total_records'],
+            "qualified_input_records": input_data['qualified_records'],
+            "qualification_rate": input_data['qualified_records'] / input_data['total_records'] if input_data['total_records'] > 0 else 0.0
+        })
+    
+    return result_stats
