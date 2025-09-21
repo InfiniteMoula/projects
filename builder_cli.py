@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import copy
 import json
 import os
@@ -7,6 +7,7 @@ import sys
 import time
 import traceback
 import uuid
+from typing import Optional, Sequence
 from pathlib import Path
 
 import psutil
@@ -793,7 +794,7 @@ def run_profile_multi_nafs(args, job, profile, steps, logger):
     return summary
 
 
-def main(argv=None) -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog='builder_cli')
     sub = parser.add_subparsers(dest='cmd', required=True)
 
