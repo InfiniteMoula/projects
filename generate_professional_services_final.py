@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate comprehensive professional services job templates using the existing system."""
 
+import argparse
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List, Optional
 import unicodedata
 
 import yaml
@@ -465,42 +466,103 @@ def create_professional_yaml_content(naf_code: str, service_info: Dict) -> str:
 
     return '\n'.join(yaml_lines) + '\n'
 
-def generate_all_professional_jobs():
+def generate_all_professional_jobs(output_dir: Path, target_naf: Optional[Iterable[str]] = None) -> None:
     """Generate all professional services job files using proper YAML."""
-    jobs_dir = Path(__file__).parent / "jobs"
-    
-    print(f"Generating {len(PROFESSIONAL_SERVICES)} professional services job templates...")
-    
-    for naf_code, service_info in PROFESSIONAL_SERVICES.items():
+    output_dir = output_dir.expanduser()
+
+    available_codes = list(PROFESSIONAL_SERVICES.keys())
+    selected_codes: List[str]
+    missing_codes: List[str] = []
+
+    if target_naf:
+        normalized_target = {code.strip().upper() for code in target_naf if code and code.strip()}
+        missing_codes = sorted(code for code in normalized_target if code not in PROFESSIONAL_SERVICES)
+        selected_codes = [code for code in available_codes if code in normalized_target]
+        if not selected_codes:
+            print("[WARN] Aucun code NAF valide; aucun fichier genere.")
+            if missing_codes:
+                print(f"[WARN] Codes NAF inconnus: {', '.join(missing_codes)}")
+            return
+    else:
+        selected_codes = available_codes
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[ERROR] Impossible de creer le dossier de sortie {output_dir}: {exc}")
+        return
+
+    print(f"Generating {len(selected_codes)} professional services job templates in {output_dir}...")
+    if missing_codes:
+        print(f"[WARN] Codes NAF ignores: {', '.join(missing_codes)}")
+
+    generated_files = 0
+    for naf_code in selected_codes:
+        service_info = PROFESSIONAL_SERVICES[naf_code]
         niche_name = generate_niche_name(naf_code)
-        job_file = jobs_dir / f"{niche_name}.yaml"
-        
+        job_file = output_dir / f"{niche_name}.yaml"
+
         content = create_professional_yaml_content(naf_code, service_info)
-        
-        with open(job_file, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        print(f"[OK] Created {job_file.name} for {service_info['name']} ({naf_code})")
-    
-    print(f"\nSuccessfully generated {len(PROFESSIONAL_SERVICES)} job templates in {jobs_dir}")
-    
-    # Create summary file
-    summary_file = jobs_dir / "professional_services_summary.md"
-    with open(summary_file, 'w', encoding='utf-8') as f:
-        f.write("# Professional Services NAF Codes Summary\n\n")
-        f.write("This document lists all generated professional services job templates.\n\n")
-        
-        for naf_code, service_info in PROFESSIONAL_SERVICES.items():
-            niche_name = generate_niche_name(naf_code)
-            f.write(f"## {naf_code} - {service_info['name']}\n")
-            f.write(f"- **File**: `{niche_name}.yaml`\n")
-            f.write(f"- **Seeds**: {len(service_info['seeds'])} websites\n")
-            f.write(f"- **Domains**: {len(service_info['domains'])} domains\n")
-            f.write(f"- **Example websites**: {', '.join(service_info['seeds'][:3])}\n")
-            f.write("\n")
-    
-    print(f"[OK] Created summary file: {summary_file.name}")
+
+        try:
+            with open(job_file, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as exc:
+            print(f"[ERROR] Echec ecriture du fichier {job_file}: {exc}")
+            continue
+
+        generated_files += 1
+        print(f"[OK] Fichier cree {job_file.name} pour {service_info['name']} ({naf_code})")
+
+    if generated_files == 0:
+        print("[WARN] Aucun job genere.")
+        return
+
+    summary_file = output_dir / "professional_services_summary.md"
+    try:
+        with open(summary_file, "w", encoding="utf-8") as f:
+            f.write("# Professional Services NAF Codes Summary\n\n")
+            f.write("This document lists generated professional services job templates.\n\n")
+            for naf_code in selected_codes:
+                service_info = PROFESSIONAL_SERVICES[naf_code]
+                niche_name = generate_niche_name(naf_code)
+                f.write(f"## {naf_code} - {service_info['name']}\n")
+                f.write(f"- **File**: {niche_name}.yaml\n")
+                f.write(f"- **Seeds**: {len(service_info['seeds'])} websites\n")
+                f.write(f"- **Domains**: {len(service_info['domains'])} domains\n")
+                f.write(f"- **Example websites**: {', '.join(service_info['seeds'][:3])}\n")
+                f.write("\n")
+    except OSError as exc:
+        print(f"[WARN] Echec ecriture du fichier de synthese {summary_file}: {exc}")
+    else:
+        print(f"[OK] Fichier de synthese cree: {summary_file.name}")
+
+
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate professional services job templates."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(__file__).parent / "jobs",
+        help="Directory to write generated job files (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--naf",
+        nargs="+",
+        metavar="CODE",
+        help="Optional NAF codes to generate; defaults to all supported codes.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    generate_all_professional_jobs(args.output_dir, args.naf)
 
 
 if __name__ == "__main__":
-    generate_all_professional_jobs()
+    main()
