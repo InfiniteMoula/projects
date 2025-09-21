@@ -191,9 +191,6 @@ def _run_step(step_name, cfg, context):
                 "duration_s": 0,
             }
             pipeline.log_step_event(logger, step_name, "budget_exceeded", status="BUDGET_EXCEEDED", error=str(exc))
-        "metrics_file": str(args.metrics_file) if getattr(args, "metrics_file", None) else None,
-        "metrics_file": str(args.metrics_file) if getattr(args, 'metrics_file', None) else None,
-        "metrics_file": str(args.metrics_file) if getattr(args, "metrics_file", None) else None,
             log_lock = context.get("log_lock")
             with (log_lock if log_lock else nullcontext()):
                 io.log_json(context["logs"], status)
@@ -488,39 +485,6 @@ def run_batch_jobs(args, logger=None):
         logger.info("Dry run mode: jobs generated but not executed")
         logger.info("Generated job files: %s", [str(f) for f in job_files])
 
-    metrics_file = ctx.get("metrics_file")
-    if metrics_file:
-        metrics_path = Path(metrics_file).expanduser()
-        metrics_payload = {
-            "run_id": ctx.get("run_id"),
-            "profile": getattr(args, "profile", None),
-            "elapsed_s": elapsed,
-            "parallel": ctx["metrics"].get("parallel"),
-            "parallel_mode": ctx["metrics"].get("parallel_mode"),
-            "worker_count": ctx["metrics"].get("worker_count"),
-            "start_time": ctx["metrics"].get("start_time"),
-            "step_count": len(results),
-            "batch_count": len(batches),
-            "steps": [
-                {
-                    "step": result.get("step"),
-                    "status": result.get("status"),
-                    "duration_s": result.get("duration_s"),
-                    "error": result.get("error"),
-                }
-                for result in results
-            ],
-        }
-        if final_kpis is not None:
-            metrics_payload["final_kpis"] = final_kpis
-        if budget_tracker:
-            metrics_payload["budget_stats"] = budget_tracker.get_current_stats()
-        try:
-            io.ensure_dir(metrics_path.parent)
-            io.write_text(metrics_path, json.dumps(metrics_payload, ensure_ascii=False, indent=2))
-        except io.IoError as exc:
-            logger.warning("Failed to write metrics file %s: %s", metrics_path, exc)
-
         return {
             "status": "OK",
             "total_jobs": len(job_files),
@@ -530,6 +494,7 @@ def run_batch_jobs(args, logger=None):
             "results": [],
             "dry_run": True,
         }
+
 
     batch_start = time.time()
     results = []
@@ -571,7 +536,6 @@ def run_batch_jobs(args, logger=None):
 
         try:
             start_time = time.time()
-    ctx['metrics']['start_time'] = start_time
             result = subprocess.run(
                 cmd_args,
                 cwd=Path(__file__).parent,
@@ -664,8 +628,6 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
         use_process = False
     use_thread = parallel_candidate and (parallel_mode == 'thread' or (parallel_mode == 'process' and not use_process))
     parallel_enabled = use_thread or use_process
-
-    }
 
     if ctx.get('debug'):
         logger.info("[DEBUG] Pipeline configuration:")
@@ -1056,3 +1018,4 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
