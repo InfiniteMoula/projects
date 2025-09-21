@@ -2,8 +2,9 @@
 """Generate comprehensive professional services job templates using the existing system."""
 
 import argparse
+from copy import deepcopy
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 import unicodedata
 
 import yaml
@@ -51,6 +52,119 @@ def generate_niche_name(naf_code: str) -> str:
     """Generate a consistent niche identifier from a NAF code."""
     naf_clean = naf_code.replace('.', '').replace(' ', '').upper()
     return f"naf_{naf_clean}"
+
+
+DEFAULT_EMAIL_FORMATS = [
+    'contact@{{d}}',
+    'info@{{d}}',
+    'bonjour@{{d}}',
+    'cabinet@{{d}}',
+    'secretariat@{{d}}',
+]
+
+DEFAULT_ALLOW_PATTERNS = [
+    'contact',
+    'mentions',
+    'about',
+    'equipe',
+    'team',
+    'avocats',
+    'experts',
+    'services',
+    'cabinet',
+]
+
+DEFAULT_JOB_SPEC: Dict[str, Any] = {
+    'niche': '',
+    'filters': {
+        'naf_include': [],
+        'active_only': False,
+    },
+    'profile': 'standard',
+    'steps_order': [],
+    'http': {
+        'seeds': [],
+        'per_domain_rps': 0.5,
+    },
+    'sitemap': {
+        'domains': [],
+        'allow_patterns': DEFAULT_ALLOW_PATTERNS,
+        'max_urls': 500,
+    },
+    'feeds': {'urls': []},
+    'pdf': {'urls': []},
+    'api': {'endpoints': []},
+    'enrich': {
+        'directory_csv': '',
+        'email_formats_priority': DEFAULT_EMAIL_FORMATS,
+    },
+    'dedupe': {
+        'keys': ['siren', 'domain_root', 'best_email', 'telephone_norm'],
+        'fuzzy': False,
+    },
+    'scoring': {
+        'weights': {
+            'contactability': 50,
+            'unicity': 20,
+            'completeness': 20,
+            'freshness': 10,
+        },
+    },
+    'output': {
+        'dir': '',
+        'lang': 'fr',
+    },
+    'kpi_targets': {
+        'min_quality_score': 80,
+        'max_dup_pct': 1.5,
+        'min_url_valid_pct': 85,
+        'min_domain_resolved_pct': 80,
+        'min_email_plausible_pct': 60,
+        'min_lines_per_s': 50,
+    },
+    'budgets': {
+        'max_http_bytes': 52_428_800,
+        'max_http_requests': 2000,
+        'time_budget_min': 90,
+        'ram_mb': 4096,
+    },
+    'retention_days': 30,
+}
+
+COMMENT_AFTER_RULES = {
+    'filters:': '  # regions: ["75", "92", "93", "94"]   (optionnel) filtre par préfixe CP',
+}
+
+COMMENT_BEFORE_RULES = [
+    ('max_http_bytes:', '50MB - supports Google Maps enrichment'),
+    ('max_http_requests:', '2000 requests for web scraping and Google Maps searches'),
+    ('time_budget_min:', '90 minutes to allow comprehensive enrichment'),
+]
+
+
+def _ensure_list_of_strings(values: Iterable[str], field_name: str) -> List[str]:
+    if isinstance(values, str):
+        raise TypeError(f"{field_name} must be a sequence of strings, not a single string")
+    try:
+        items = list(values)
+    except TypeError as exc:
+        raise TypeError(f"{field_name} must be an iterable of strings (got {type(values).__name__})") from exc
+    if not items:
+        raise ValueError(f"{field_name} must contain at least one string")
+    for entry in items:
+        if not isinstance(entry, str):
+            raise TypeError(f"{field_name} entries must be strings: {entry!r}")
+        if not entry:
+            raise ValueError(f"{field_name} entries must be non-empty strings")
+    return items
+
+
+def _merge_dict(target: Dict[str, Any], overrides: Dict[str, Any]) -> None:
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_dict(target[key], value)
+        else:
+            target[key] = value
 
 
 # Comprehensive NAF codes for professional services with relevant websites
@@ -123,7 +237,7 @@ PROFESSIONAL_SERVICES = {
         "seeds": [
             "https://www.syntec-numerique.fr",
             "https://www.maintenance-informatique.fr",
-            "https://www.infogérance.fr"
+            "https://www.infogerance.fr"
         ],
         "domains": ["syntec-numerique.fr", "maintenance-informatique.fr"]
     },
@@ -358,101 +472,38 @@ def create_professional_yaml_content(naf_code: str, service_info: Dict) -> str:
     """Create properly formatted YAML content for a professional service using structured data."""
     niche_name = generate_niche_name(naf_code)
 
-    def ensure_list_of_strings(values: List[str], field_name: str) -> List[str]:
-        if not isinstance(values, list):
-            raise TypeError(f"{field_name} must be a list of strings (got {type(values).__name__})")
-        normalized_values: List[str] = []
-        for entry in values:
-            if not isinstance(entry, str):
-                raise TypeError(f"{field_name} entries must be strings: {entry!r}")
-            normalized_values.append(entry)
-        return normalized_values
+    if 'seeds' not in service_info or 'domains' not in service_info:
+        raise KeyError(f"Configuration incohérente pour {naf_code}: 'seeds' et 'domains' sont requis")
 
-    def merge_dict(target: Dict, overrides: Dict) -> None:
-        for key, value in overrides.items():
-            if isinstance(value, dict) and isinstance(target.get(key), dict):
-                merge_dict(target[key], value)
-            else:
-                target[key] = value
+    seeds = _ensure_list_of_strings(service_info['seeds'], 'seeds')
+    domains = _ensure_list_of_strings(service_info['domains'], 'domains')
 
-    seeds = ensure_list_of_strings(service_info['seeds'], 'seeds')
-    domains = ensure_list_of_strings(service_info['domains'], 'domains')
-
-    job_spec: Dict = {
-        'niche': niche_name,
-        'filters': {
-            'naf_include': [naf_code],
-            'active_only': False,
-        },
-        'profile': 'standard',
-        'steps_order': [],
-        'http': {
-            'seeds': seeds,
-            'per_domain_rps': 0.5,
-        },
-        'sitemap': {
-            'domains': domains,
-            'allow_patterns': ['contact', 'mentions', 'about', 'equipe', 'team', 'avocats', 'experts', 'services', 'cabinet'],
-            'max_urls': 500,
-        },
-        'feeds': {'urls': []},
-        'pdf': {'urls': []},
-        'api': {'endpoints': []},
-        'enrich': {
-            'directory_csv': '',
-            'email_formats_priority': ['contact@{{d}}', 'info@{{d}}', 'bonjour@{{d}}', 'cabinet@{{d}}', 'secretariat@{{d}}'],
-        },
-        'dedupe': {
-            'keys': ['siren', 'domain_root', 'best_email', 'telephone_norm'],
-            'fuzzy': False,
-        },
-        'scoring': {
-            'weights': {
-                'contactability': 50,
-                'unicity': 20,
-                'completeness': 20,
-                'freshness': 10,
-            },
-        },
-        'output': {
-            'dir': f'out/{niche_name}',
-            'lang': 'fr',
-        },
-        'kpi_targets': {
-            'min_quality_score': 80,
-            'max_dup_pct': 1.5,
-            'min_url_valid_pct': 85,
-            'min_domain_resolved_pct': 80,
-            'min_email_plausible_pct': 60,
-            'min_lines_per_s': 50,
-        },
-        'budgets': {
-            'max_http_bytes': 52428800,
-            'max_http_requests': 2000,
-            'time_budget_min': 90,
-            'ram_mb': 4096,
-        },
-        'retention_days': 30,
-    }
+    job_spec = deepcopy(DEFAULT_JOB_SPEC)
+    job_spec['niche'] = niche_name
+    job_spec['filters']['naf_include'] = [naf_code]
+    job_spec['http']['seeds'] = seeds
+    job_spec['sitemap']['domains'] = domains
+    job_spec['output']['dir'] = f'out/{niche_name}'
 
     recognized_keys = {'name', 'seeds', 'domains'}
     for key, value in service_info.items():
         if key in recognized_keys:
             continue
         if isinstance(value, dict) and isinstance(job_spec.get(key), dict):
-            merge_dict(job_spec[key], value)
+            _merge_dict(job_spec[key], value)
         else:
             job_spec[key] = value
 
     yaml_content = yaml.safe_dump(job_spec, sort_keys=False, allow_unicode=True)
     yaml_lines = yaml_content.rstrip('\n').split('\n')
 
-    for index, line in enumerate(yaml_lines):
-        if line.startswith('filters:'):
-            yaml_lines.insert(index + 1, '  # regions: ["75", "92", "93", "94"]   (optionnel) filtre par préfixe CP')
-            break
+    for prefix, comment_line in COMMENT_AFTER_RULES.items():
+        for index, line in enumerate(yaml_lines):
+            if line.startswith(prefix):
+                yaml_lines.insert(index + 1, comment_line)
+                break
 
-    def add_comment_before(prefix: str, comment: str) -> None:
+    for prefix, comment in COMMENT_BEFORE_RULES:
         for idx in range(len(yaml_lines) - 1, -1, -1):
             line = yaml_lines[idx]
             if line.lstrip().startswith(prefix):
@@ -460,11 +511,8 @@ def create_professional_yaml_content(naf_code: str, service_info: Dict) -> str:
                 yaml_lines.insert(idx, f"{indent}# {comment}")
                 break
 
-    add_comment_before('max_http_bytes:', '50MB - supports Google Maps enrichment')
-    add_comment_before('max_http_requests:', '2000 requests for web scraping and Google Maps searches')
-    add_comment_before('time_budget_min:', '90 minutes to allow comprehensive enrichment')
-
     return '\n'.join(yaml_lines) + '\n'
+
 
 def generate_all_professional_jobs(output_dir: Path, target_naf: Optional[Iterable[str]] = None) -> None:
     """Generate all professional services job files using proper YAML."""
