@@ -6,21 +6,45 @@ This module implements ML-based address quality assessment and success predictio
 for scraping operations, helping optimize address selection and processing.
 """
 
+import copy
 import pickle
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+
+if TYPE_CHECKING:
+    from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+    from sklearn.model_selection import cross_val_score, train_test_split
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+
 
 logger = logging.getLogger(__name__)
+
+@lru_cache(maxsize=1)
+def _get_preprocessing():
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+    return LabelEncoder, StandardScaler
+
+@lru_cache(maxsize=1)
+def _get_model_selection():
+    from sklearn.model_selection import cross_val_score, train_test_split
+    return cross_val_score, train_test_split
+
+@lru_cache(maxsize=1)
+def _get_ensemble():
+    from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+    return GradientBoostingClassifier, RandomForestClassifier
+
+@lru_cache(maxsize=8)
+def _load_pickled_models(path: str) -> dict:
+    with open(path, "rb") as handle:
+        return pickle.load(handle)
+
 
 
 @dataclass
@@ -324,12 +348,11 @@ class AddressSuccessClassifier:
     
     def __init__(self, model_dir: str = "models"):
         self.model_dir = Path(model_dir)
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-        
+        LabelEncoderCls, StandardScalerCls = _get_preprocessing()
         self.feature_extractor = AddressFeatureExtractor()
         self.classifier = None
-        self.scaler = StandardScaler()
-        self.label_encoder = LabelEncoder()
+        self.scaler = StandardScalerCls()
+        self.label_encoder = LabelEncoderCls()
         
         # Training data
         self.training_data = []
@@ -380,6 +403,8 @@ class AddressSuccessClassifier:
         logger.info(f"Training classifier with {len(self.training_data)} examples")
         
         # Prepare features and targets
+        GradientBoostingCls, _ = _get_ensemble()
+        cross_val_score_fn, train_test_split_fn = _get_model_selection()
         X_features = []
         y_categories = []
         
@@ -412,12 +437,12 @@ class AddressSuccessClassifier:
         y_encoded = self.label_encoder.fit_transform(y)
         
         # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
+        X_train, X_test, y_train, y_test = train_test_split_fn(
             X_scaled, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
         )
         
         # Train classifier
-        self.classifier = GradientBoostingClassifier(
+        self.classifier = GradientBoostingCls(
             n_estimators=100,
             learning_rate=0.1,
             max_depth=3,
@@ -431,7 +456,7 @@ class AddressSuccessClassifier:
         test_score = self.classifier.score(X_test, y_test)
         
         # Cross-validation
-        cv_scores = cross_val_score(self.classifier, X_scaled, y_encoded, cv=5)
+        cv_scores = cross_val_score_fn(self.classifier, X_scaled, y_encoded, cv=5)
         
         # Feature importance
         feature_names = [
@@ -593,33 +618,32 @@ class AddressSuccessClassifier:
         try:
             with open(model_file, 'wb') as f:
                 pickle.dump(models_to_save, f)
+            _load_pickled_models.cache_clear()
             logger.info(f"Models saved to {model_file}")
         except Exception as e:
             logger.error(f"Failed to save models: {e}")
     
-    def load_models(self) -> bool:
+def load_models(self) -> bool:
         """Load trained models from disk."""
         model_file = self.model_dir / "address_classifier.pkl"
-        
-        if not model_file.exists():
+
+        try:
+            models = copy.deepcopy(_load_pickled_models(str(model_file)))
+        except FileNotFoundError:
             logger.info("No saved models found")
             return False
-        
-        try:
-            with open(model_file, 'rb') as f:
-                models = pickle.load(f)
-            
-            self.classifier = models.get('classifier')
-            self.scaler = models.get('scaler', StandardScaler())
-            self.label_encoder = models.get('label_encoder', LabelEncoder())
-            self.training_data = models.get('training_data', [])
-            
-            logger.info(f"Models loaded from {model_file}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load models: {e}")
+        except (OSError, pickle.UnpicklingError) as exc:
+            logger.error(f"Failed to load models: {exc}")
             return False
+
+        LabelEncoderCls, StandardScalerCls = _get_preprocessing()
+        self.classifier = models.get('classifier')
+        self.scaler = models.get('scaler') or StandardScalerCls()
+        self.label_encoder = models.get('label_encoder') or LabelEncoderCls()
+        self.training_data = models.get('training_data', [])
+
+        logger.info(f"Models loaded from {model_file}")
+        return True
 
 
 def create_address_classifier(model_dir: str = "models") -> AddressSuccessClassifier:

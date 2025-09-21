@@ -9,22 +9,55 @@ This module implements ML-based extraction enhancement including:
 - Model training and prediction
 """
 
+import copy
 import json
 import pickle
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any, Set
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, mean_squared_error
-from sklearn.preprocessing import StandardScaler
+
+if TYPE_CHECKING:
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
+
+@lru_cache(maxsize=1)
+def _get_vectorizer():
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    return TfidfVectorizer
+
+@lru_cache(maxsize=1)
+def _get_ensemble_models():
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+    return RandomForestClassifier, RandomForestRegressor
+
+@lru_cache(maxsize=1)
+def _get_model_selection():
+    from sklearn.model_selection import train_test_split
+    return train_test_split
+
+@lru_cache(maxsize=1)
+def _get_scaler():
+    from sklearn.preprocessing import StandardScaler
+    return StandardScaler
+
+@lru_cache(maxsize=1)
+def _get_metrics():
+    from sklearn.metrics import mean_squared_error
+    return mean_squared_error
+
+@lru_cache(maxsize=8)
+def _load_pickled_models(path: str) -> dict:
+    with open(path, "rb") as handle:
+        return pickle.load(handle)
+
 
 
 @dataclass
@@ -257,9 +290,10 @@ class ExtractionPatternLearner:
         self.model_dir.mkdir(parents=True, exist_ok=True)
         
         self.feature_extractor = FeatureExtractor()
-        self.vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
-        self.scaler = StandardScaler()
-        
+        VectorizerCls = _get_vectorizer()
+        self.vectorizer = VectorizerCls(max_features=1000, stop_words='english')
+        ScalerCls = _get_scaler()
+        self.scaler = ScalerCls()
         # Models for different extraction types
         self.pattern_classifiers = {}  # Type -> classifier
         self.confidence_regressors = {}  # Type -> regressor
@@ -305,6 +339,9 @@ class ExtractionPatternLearner:
         results = {}
         
         for ext_type in types_to_train:
+            classifier_cls, regressor_cls = _get_ensemble_models()
+            train_test_split_fn = _get_model_selection()
+            mean_squared_error_fn = _get_metrics()
             logger.info(f"Training models for extraction type: {ext_type}")
             
             examples = self.training_data[ext_type]
@@ -354,11 +391,11 @@ class ExtractionPatternLearner:
             
             # Train classification model (correct/incorrect)
             if len(set(y_correct)) > 1:  # Need both positive and negative examples
-                X_train, X_test, y_train_correct, y_test_correct = train_test_split(
+                X_train, X_test, y_train_correct, y_test_correct = train_test_split_fn(
                     X_combined, y_correct, test_size=0.2, random_state=42
                 )
                 
-                classifier = RandomForestClassifier(n_estimators=100, random_state=42)
+                classifier = classifier_cls(n_estimators=100, random_state=42)
                 classifier.fit(X_train, y_train_correct)
                 
                 # Evaluate
@@ -370,16 +407,16 @@ class ExtractionPatternLearner:
                 logger.info(f"Classification accuracy for {ext_type}: {classification_score:.3f}")
             
             # Train confidence regression model
-            X_train, X_test, y_train_conf, y_test_conf = train_test_split(
+            X_train, X_test, y_train_conf, y_test_conf = train_test_split_fn(
                 X_combined, y_confidence, test_size=0.2, random_state=42
             )
             
-            regressor = RandomForestRegressor(n_estimators=100, random_state=42)
+            regressor = regressor_cls(n_estimators=100, random_state=42)
             regressor.fit(X_train, y_train_conf)
             
             # Evaluate
             y_pred_conf = regressor.predict(X_test)
-            mse = mean_squared_error(y_test_conf, y_pred_conf)
+            mse = mean_squared_error_fn(y_test_conf, y_pred_conf)
             
             self.confidence_regressors[ext_type] = regressor
             
@@ -519,6 +556,7 @@ class ExtractionPatternLearner:
         try:
             with open(model_file, 'wb') as f:
                 pickle.dump(models_to_save, f)
+            _load_pickled_models.cache_clear()
             logger.info(f"Models saved to {model_file}")
         except Exception as e:
             logger.error(f"Failed to save models: {e}")
@@ -526,28 +564,27 @@ class ExtractionPatternLearner:
     def load_models(self) -> bool:
         """Load trained models from disk."""
         model_file = self.model_dir / "extraction_models.pkl"
-        
-        if not model_file.exists():
+
+        try:
+            models = copy.deepcopy(_load_pickled_models(str(model_file)))
+        except FileNotFoundError:
             logger.info("No saved models found")
             return False
-        
-        try:
-            with open(model_file, 'rb') as f:
-                models = pickle.load(f)
-            
-            self.pattern_classifiers = models.get('pattern_classifiers', {})
-            self.confidence_regressors = models.get('confidence_regressors', {})
-            self.vectorizer = models.get('vectorizer', TfidfVectorizer())
-            self.scaler = models.get('scaler', StandardScaler())
-            self.training_data = models.get('training_data', {})
-            
-            logger.info(f"Models loaded from {model_file}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load models: {e}")
+        except (OSError, pickle.UnpicklingError) as exc:
+            logger.error(f"Failed to load models: {exc}")
             return False
 
+        scaler_cls = _get_scaler()
+        vectorizer_cls = _get_vectorizer()
+
+        self.pattern_classifiers = models.get("pattern_classifiers", {})
+        self.confidence_regressors = models.get("confidence_regressors", {})
+        self.vectorizer = models.get("vectorizer") or vectorizer_cls(max_features=1000, stop_words="english")
+        self.scaler = models.get("scaler") or scaler_cls()
+        self.training_data = models.get("training_data", {})
+
+        logger.info(f"Models loaded from {model_file}")
+        return True
 
 def create_extraction_learner(model_dir: str = "models") -> ExtractionPatternLearner:
     """Create and initialize an extraction pattern learner."""

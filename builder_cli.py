@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import copy
 import json
 import os
@@ -7,7 +7,10 @@ import sys
 import time
 import traceback
 import uuid
-from typing import Optional, Sequence
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
+import threading
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 from pathlib import Path
 
 import psutil
@@ -188,7 +191,12 @@ def _run_step(step_name, cfg, context):
                 "duration_s": 0,
             }
             pipeline.log_step_event(logger, step_name, "budget_exceeded", status="BUDGET_EXCEEDED", error=str(exc))
-            io.log_json(context["logs"], status)
+        "metrics_file": str(args.metrics_file) if getattr(args, "metrics_file", None) else None,
+        "metrics_file": str(args.metrics_file) if getattr(args, 'metrics_file', None) else None,
+        "metrics_file": str(args.metrics_file) if getattr(args, "metrics_file", None) else None,
+            log_lock = context.get("log_lock")
+            with (log_lock if log_lock else nullcontext()):
+                io.log_json(context["logs"], status)
             raise RuntimeError(f"step {step_name} budget exceeded: {exc}")
     
     fn = pipeline.resolve_step(step_name, STEP_REGISTRY)
@@ -278,7 +286,9 @@ def _run_step(step_name, cfg, context):
         duration=status["duration_s"],
         **extra,
     )
-    io.log_json(context["logs"], status)
+    log_lock = context.get("log_lock")
+    with (log_lock if log_lock else nullcontext()):
+        io.log_json(context["logs"], status)
     if verbose:
         logger.debug(f"[VERBOSE] Complete step result for {step_name}: {json.dumps(status, ensure_ascii=False)}")
     elif debug and status.get("error"):
@@ -323,6 +333,10 @@ def build_context(args, job):
         "verbose": args.verbose,
         "debug": getattr(args, 'debug', False),
         "max_ram_mb": args.max_ram_mb,
+        "metrics_file": str(args.metrics_file) if getattr(args, "metrics_file", None) else None,
+        "parallel": getattr(args, 'parallel', False),
+        "parallel_mode": getattr(args, 'parallel_mode', 'thread'),
+        "log_lock": threading.Lock(),
     }
     
     # Initialize budget tracker if budgets are configured
@@ -336,6 +350,23 @@ def build_context(args, job):
         ctx["kpi_calculator"] = kpi_calculator
     
     return ctx
+
+
+
+
+def _prepare_process_context(ctx: dict) -> dict:
+    """Return a sanitized context dictionary safe for subprocess execution."""
+    allowed = {k: v for k, v in ctx.items() if k not in {'logger', 'log_lock', 'budget_tracker', 'kpi_calculator', 'metrics_file'}}
+    return allowed
+
+
+def _run_step_in_process(step_name: str, job: dict, ctx_dict: dict) -> dict:
+    """Execute a pipeline step inside a subprocess."""
+    local_ctx = ctx_dict.copy()
+    logger = pipeline.configure_logging(local_ctx.get('verbose', False), local_ctx.get('debug', False))
+    local_ctx['logger'] = logger
+    local_ctx['log_lock'] = None
+    return _run_step(step_name, job, local_ctx)
 
 
 def topo_sorted(steps, logger):
@@ -354,6 +385,29 @@ def topo_sorted(steps, logger):
             )
     return ordered
 
+
+def build_execution_batches(steps: Sequence[str]) -> List[List[str]]:
+    """Group pipeline steps into batches that can run in parallel."""
+    pending = [step for step in steps]
+    completed: Set[str] = set()
+    batches: List[List[str]] = []
+    step_set = set(steps)
+    deps: Dict[str, Set[str]] = {
+        step: set(STEP_DEPENDENCIES.get(step, ())) & step_set for step in steps
+    }
+
+    while pending:
+        ready: List[str] = []
+        for step in pending:
+            if deps[step] <= completed:
+                ready.append(step)
+        if not ready:
+            raise ValueError("No executable steps found; dependency cycle suspected")
+        batches.append(ready)
+        completed.update(ready)
+        pending = [step for step in pending if step not in ready]
+
+    return batches
 
 def explain(steps):
     print("DAG:")
@@ -433,10 +487,54 @@ def run_batch_jobs(args, logger=None):
     if args.dry_run:
         logger.info("Dry run mode: jobs generated but not executed")
         logger.info("Generated job files: %s", [str(f) for f in job_files])
-        return {"status": "OK", "generated_jobs": len(job_files), "dry_run": True}
 
+    metrics_file = ctx.get("metrics_file")
+    if metrics_file:
+        metrics_path = Path(metrics_file).expanduser()
+        metrics_payload = {
+            "run_id": ctx.get("run_id"),
+            "profile": getattr(args, "profile", None),
+            "elapsed_s": elapsed,
+            "parallel": ctx["metrics"].get("parallel"),
+            "parallel_mode": ctx["metrics"].get("parallel_mode"),
+            "worker_count": ctx["metrics"].get("worker_count"),
+            "start_time": ctx["metrics"].get("start_time"),
+            "step_count": len(results),
+            "batch_count": len(batches),
+            "steps": [
+                {
+                    "step": result.get("step"),
+                    "status": result.get("status"),
+                    "duration_s": result.get("duration_s"),
+                    "error": result.get("error"),
+                }
+                for result in results
+            ],
+        }
+        if final_kpis is not None:
+            metrics_payload["final_kpis"] = final_kpis
+        if budget_tracker:
+            metrics_payload["budget_stats"] = budget_tracker.get_current_stats()
+        try:
+            io.ensure_dir(metrics_path.parent)
+            io.write_text(metrics_path, json.dumps(metrics_payload, ensure_ascii=False, indent=2))
+        except io.IoError as exc:
+            logger.warning("Failed to write metrics file %s: %s", metrics_path, exc)
+
+        return {
+            "status": "OK",
+            "total_jobs": len(job_files),
+            "successful_jobs": 0,
+            "failed_jobs": 0,
+            "elapsed": 0.0,
+            "results": [],
+            "dry_run": True,
+        }
+
+    batch_start = time.time()
     results = []
     failed_jobs = []
+
     logger.info("Executing %d jobs sequentially...", len(job_files))
 
     for i, job_file in enumerate(job_files, 1):
@@ -473,6 +571,7 @@ def run_batch_jobs(args, logger=None):
 
         try:
             start_time = time.time()
+    ctx['metrics']['start_time'] = start_time
             result = subprocess.run(
                 cmd_args,
                 cwd=Path(__file__).parent,
@@ -484,41 +583,34 @@ def run_batch_jobs(args, logger=None):
 
             if result.returncode == 0:
                 logger.info("NAF %s completed successfully in %.1fs", naf_code, elapsed)
-                results.append(
-                    {
-                        "naf_code": naf_code,
-                        "status": "SUCCESS",
-                        "duration": elapsed,
-                        "output_dir": str(job_output_dir),
-                    }
-                )
-                continue
-
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            logger.error("NAF %s failed: %s", naf_code, error_msg)
-            failed_jobs.append(naf_code)
-            results.append(
-                {
+                results.append({
+                    "naf_code": naf_code,
+                    "status": "SUCCESS",
+                    "duration": elapsed,
+                    "output_dir": str(job_output_dir),
+                })
+            else:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                logger.error("NAF %s failed: %s", naf_code, error_msg)
+                failed_jobs.append(naf_code)
+                results.append({
                     "naf_code": naf_code,
                     "status": "FAILED",
                     "duration": elapsed,
                     "error": error_msg,
-                }
-            )
-            if not args.continue_on_error:
-                raise RuntimeError(f"NAF {naf_code} failed: {error_msg}")
+                })
+                if not args.continue_on_error:
+                    raise RuntimeError(f"NAF {naf_code} failed: {error_msg}")
 
         except subprocess.TimeoutExpired:
             logger.error("NAF %s timed out after 1 hour", naf_code)
             failed_jobs.append(naf_code)
-            results.append(
-                {
-                    "naf_code": naf_code,
-                    "status": "TIMEOUT",
-                    "duration": 3600,
-                    "error": "Job timed out",
-                }
-            )
+            results.append({
+                "naf_code": naf_code,
+                "status": "TIMEOUT",
+                "duration": 3600,
+                "error": "Job timed out",
+            })
             if not args.continue_on_error:
                 raise RuntimeError(f"NAF {naf_code} timeout")
 
@@ -527,23 +619,19 @@ def run_batch_jobs(args, logger=None):
                 raise
             logger.exception("NAF %s failed", naf_code)
             failed_jobs.append(naf_code)
-            results.append(
-                {
-                    "naf_code": naf_code,
-                    "status": "ERROR",
-                    "duration": 0,
-                    "error": str(exc),
-                }
-            )
+            results.append({
+                "naf_code": naf_code,
+                "status": "ERROR",
+                "duration": 0,
+                "error": str(exc),
+            })
             if not args.continue_on_error:
                 raise
 
     successful = [r for r in results if r["status"] == "SUCCESS"]
-    logger.info(
-        "Batch processing completed: %d/%d jobs successful",
-        len(successful),
-        len(args.naf_codes),
-    )
+    total_elapsed = round(time.time() - batch_start, 1)
+    logger.info("Batch processing completed: %d/%d jobs successful", len(successful), len(args.naf_codes))
+    logger.info("Batch execution finished in %.1fs", total_elapsed)
     if failed_jobs:
         logger.warning("Failed NAF codes: %s", failed_jobs)
 
@@ -552,57 +640,124 @@ def run_batch_jobs(args, logger=None):
         "total_jobs": len(args.naf_codes),
         "successful_jobs": len(successful),
         "failed_jobs": len(failed_jobs),
-        "results": results,
+        "elapsed": total_elapsed,
+        "results": results
     }
 
-
 def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
-    '''Run configured pipeline steps and optionally suppress console output.'''
+    """Run configured pipeline steps and optionally suppress console output."""
     logger = logger or pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
     ctx = build_context(args, job)
     ctx['logger'] = logger
 
     steps_sorted = topo_sorted(steps, logger)
+    total_steps = len(steps_sorted)
+    step_indices = {name: index for index, name in enumerate(steps_sorted, start=1)}
+    step_positions = {name: f"{index}/{total_steps}" for name, index in step_indices.items()}
+    batches = build_execution_batches(steps_sorted)
+
+    parallel_candidate = bool(ctx.get('parallel')) and ctx.get('workers', 1) > 1
+    parallel_mode = ctx.get('parallel_mode', 'thread')
+    use_process = parallel_candidate and parallel_mode == 'process'
+    if use_process and (ctx.get('budget_tracker') or ctx.get('kpi_calculator')):
+        logger.warning("Process-based parallelism not supported with budget tracking or KPI calculation; falling back to threads")
+        use_process = False
+    use_thread = parallel_candidate and (parallel_mode == 'thread' or (parallel_mode == 'process' and not use_process))
+    parallel_enabled = use_thread or use_process
+
+    }
 
     if ctx.get('debug'):
-        logger.info(f"[DEBUG] Pipeline configuration:")
+        logger.info("[DEBUG] Pipeline configuration:")
         logger.info(f"[DEBUG] - Profile: {getattr(args, 'profile', 'N/A')}")
-        logger.info(f"[DEBUG] - Total steps: {len(steps_sorted)}")
+        logger.info(f"[DEBUG] - Total steps: {total_steps}")
         logger.info(f"[DEBUG] - Steps: {', '.join(steps_sorted)}")
         logger.info(f"[DEBUG] - Output directory: {ctx['outdir']}")
         logger.info(f"[DEBUG] - Run ID: {ctx['run_id']}")
         if ctx.get('verbose'):
             logger.debug(f"[VERBOSE] Job configuration: {json.dumps(job, indent=2, ensure_ascii=False)}")
+        if parallel_enabled:
+            logger.info("[DEBUG] Parallel execution enabled with up to %s workers", ctx.get('workers', 1))
 
-    results = []
+    results: List[dict] = []
+    ctx['metrics'] = {
+        'parallel': parallel_enabled,
+        'worker_count': ctx.get('workers', 1),
+    }
 
     pipeline.log_step_event(
         logger,
         'pipeline',
         'start',
         status='OK',
-        total_steps=len(steps_sorted),
+        total_steps=total_steps,
     )
     start_time = time.time()
 
-    for index, name in enumerate(steps_sorted, start=1):
-        if ctx.get('debug'):
-            logger.info(f"[DEBUG] Queuing step {index}/{len(steps_sorted)}: {name}")
+    for batch in batches:
+        for name in batch:
+            if ctx.get('debug'):
+                logger.info("[DEBUG] Queuing step %s: %s", step_positions[name], name)
+            pipeline.log_step_event(
+                logger,
+                name,
+                'queued',
+                status='OK',
+                position=step_positions[name],
+            )
 
-        pipeline.log_step_event(
-            logger,
-            name,
-            'queued',
-            status='OK',
-            position=f"{index}/{len(steps_sorted)}",
-        )
-        result = _run_step(name, job, ctx)
-        results.append(result)
+        if use_process and len(batch) > 1:
+            max_workers = max(1, min(ctx.get('workers', 1), len(batch)))
+            results_map: Dict[str, dict] = {}
+            payload_ctx = _prepare_process_context(ctx)
+            try:
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    future_map = {
+                        executor.submit(_run_step_in_process, name, copy.deepcopy(job), copy.deepcopy(payload_ctx)): name
+                        for name in batch
+                    }
+                    for future in as_completed(future_map):
+                        name = future_map[future]
+                        result = future.result()
+                        results_map[name] = result
+                        if ctx.get('debug'):
+                            logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
+            except Exception:
+                for future in future_map:
+                    future.cancel()
+                raise
 
-        if ctx.get('debug'):
-            logger.info(f"[DEBUG] Completed step {index}/{len(steps_sorted)}: {name} ({result['status']})")
+            for name in batch:
+                results.append(results_map[name])
+        elif use_thread and len(batch) > 1:
+            max_workers = max(1, min(ctx.get('workers', 1), len(batch)))
+            results_map: Dict[str, dict] = {}
+            future_map: Dict = {}
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_map = {executor.submit(_run_step, name, job, ctx): name for name in batch}
+                    for future in as_completed(future_map):
+                        name = future_map[future]
+                        result = future.result()
+                        results_map[name] = result
+                        if ctx.get('debug'):
+                            logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
+            except Exception:
+                for future in future_map:
+                    future.cancel()
+                raise
+
+            for name in batch:
+                results.append(results_map[name])
+        else:
+            for name in batch:
+                result = _run_step(name, job, ctx)
+                results.append(result)
+                if ctx.get('debug'):
+                    logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
 
     elapsed = round(time.time() - start_time, 1)
+    ctx['metrics']['elapsed'] = elapsed
 
     if ctx.get('debug'):
         logger.info(f"[DEBUG] Pipeline completed in {elapsed}s")
@@ -648,7 +803,9 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                 'out': final_kpis,
                 'duration_s': 0,
             }
-            io.log_json(ctx['logs'], kpi_status_obj)
+            log_lock = ctx.get("log_lock")
+            with (log_lock if log_lock else nullcontext()):
+                io.log_json(ctx["logs"], kpi_status_obj)
 
         except Exception as exc:
             if isinstance(exc, KeyboardInterrupt):
@@ -668,7 +825,9 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
             'out': final_budget_stats,
             'duration_s': 0,
         }
-        io.log_json(ctx['logs'], budget_status)
+        log_lock = ctx.get("log_lock")
+        with (log_lock if log_lock else nullcontext()):
+            io.log_json(ctx["logs"], budget_status)
 
     output_data = None
     kpi_msg = ''
@@ -724,8 +883,6 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
         'output_data': output_data,
         'success_message': success_msg,
     }
-
-
 def run_profile_multi_nafs(args, job, profile, steps, logger):
     '''Execute the configured profile for each requested NAF code.'''
     base_outdir = Path(args.out).expanduser().resolve()
@@ -812,6 +969,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     common.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
     common.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
     common.add_argument('--max-ram-mb', type=int, default=0)
+    common.add_argument('--metrics-file', type=Path, help='Write pipeline metrics JSON to this file')
+    common.add_argument('--parallel', action='store_true',
+                        help='Enable parallel execution for independent steps')
+    common.add_argument('--parallel-mode', choices=['thread', 'process'], default='thread',
+                        help='Parallel execution mode (default: thread)')
 
     run_step_parser = sub.add_parser('run-step', parents=[common])
     run_step_parser.add_argument('--step', required=True)

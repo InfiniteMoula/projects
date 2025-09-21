@@ -10,8 +10,10 @@ import re
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
-import requests
+import httpx
 import dns.resolver
+
+from utils.http import HttpError, request_with_backoff
 from urllib.parse import urlparse
 
 
@@ -499,7 +501,15 @@ class ContactExtractor:
         
         # Accessibility check (with timeout)
         try:
-            response = requests.head(website, timeout=5, allow_redirects=True)
+            with httpx.Client(follow_redirects=True, timeout=5.0) as client:
+                response = request_with_backoff(
+                    client,
+                    "HEAD",
+                    website,
+                    max_attempts=3,
+                    backoff_factor=0.5,
+                    logger=self.logger,
+                )
             if response.status_code < 400:
                 result['accessible'] = True
                 result['confidence'] += 0.5
@@ -507,7 +517,7 @@ class ContactExtractor:
             else:
                 result['issues'].append(f"Website returns {response.status_code}")
                 result['confidence'] += 0.2
-        except requests.RequestException:
+        except HttpError:
             result['issues'].append("Website not accessible")
             result['confidence'] += 0.1
         
