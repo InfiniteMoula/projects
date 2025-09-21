@@ -11,10 +11,10 @@ from pathlib import Path
 
 import psutil
 import yaml
-from jsonschema import validate as js_validate
-from utils import config, io, pipeline
+from jsonschema import ValidationError as SchemaValidationError, validate as js_validate
+
 import create_job
-from utils import config, io, pipeline, budget_middleware
+from utils import budget_middleware, config, io, pipeline
 
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
@@ -122,18 +122,28 @@ PROFILES = {
 }
 
 
-def load_job(job_path: os.PathLike[str] | str):
+def load_job(job_path: os.PathLike[str] | str) -> dict:
     job_file = Path(job_path).expanduser().resolve()
-    with job_file.open("r", encoding="utf-8") as handle:
-        job = yaml.safe_load(handle)
-    
-    # Check for schema validation if schema file exists
+    try:
+        job = yaml.safe_load(io.read_text(job_file))
+    except io.IoError as exc:
+        raise RuntimeError(f"Unable to read job file: {job_file}") from exc
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML in job file {job_file}: {exc}") from exc
+
     schema_path = job_file.with_name("job_schema.json")
     if schema_path.exists():
-        with schema_path.open("r", encoding="utf-8") as handle:
-            schema = json.load(handle)
-        js_validate(job, schema)
-    
+        try:
+            schema = json.loads(io.read_text(schema_path))
+        except io.IoError as exc:
+            raise RuntimeError(f"Unable to read schema file: {schema_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON schema in {schema_path}: {exc}") from exc
+        try:
+            js_validate(job, schema)
+        except SchemaValidationError as exc:
+            raise ValueError(f"Job file {job_file} does not match schema: {exc.message}") from exc
+
     job["_job_path"] = str(job_file)
     return job
 
@@ -243,10 +253,9 @@ def _run_step(step_name, cfg, context):
         if budget_tracker:
             status["budget_stats"] = budget_tracker.get_current_stats()
     except Exception as exc:
-        if debug:
-            logger.info(f"[DEBUG] Step '{step_name}' failed with error: {exc}")
-        if verbose:
-            logger.debug(f"[VERBOSE] Full traceback: {traceback.format_exc()}")
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        logger.exception("Step %s failed", step_name)
         status = {
             "step": step_name,
             "status": "FAIL",
@@ -397,61 +406,59 @@ def prepare_multi_naf_runs(job, naf_codes, base_output_dir):
     return prepared
 
 
-def run_batch_jobs(args):
+def run_batch_jobs(args, logger=None):
     """Process multiple NAF codes in batch mode."""
-    logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
-    
-    # Setup directories
+    logger = logger or pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
+
     jobs_dir = Path(args.jobs_dir).expanduser().resolve()
     output_base_dir = Path(args.output_dir).expanduser().resolve()
     template_path = args.template or (Path(__file__).parent / "job_template.yaml")
-    
-    # Ensure directories exist
+
     io.ensure_dir(jobs_dir)
     io.ensure_dir(output_base_dir)
-    
-    # Validate input file
+
     input_path = Path(args.input).expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
-    
-    # Generate job files
-    logger.info(f"Generating {len(args.naf_codes)} job files...")
+
+    logger.info("Generating %d job files...", len(args.naf_codes))
     job_files = create_job.generate_batch_jobs(
         args.naf_codes,
         jobs_dir,
         template_path,
-        args.profile
+        args.profile,
     )
-    
+
     if args.dry_run:
         logger.info("Dry run mode: jobs generated but not executed")
-        logger.info(f"Generated job files: {[str(f) for f in job_files]}")
+        logger.info("Generated job files: %s", [str(f) for f in job_files])
         return {"status": "OK", "generated_jobs": len(job_files), "dry_run": True}
-    
-    # Execute jobs sequentially
+
     results = []
     failed_jobs = []
-    
-    logger.info(f"Executing {len(job_files)} jobs sequentially...")
-    
+    logger.info("Executing %d jobs sequentially...", len(job_files))
+
     for i, job_file in enumerate(job_files, 1):
-        naf_code = args.naf_codes[i-1]
+        naf_code = args.naf_codes[i - 1]
         niche_name = create_job.generate_niche_name(naf_code)
         job_output_dir = output_base_dir / niche_name
-        
-        logger.info(f"[{i}/{len(job_files)}] Processing NAF {naf_code}...")
-        
-        # Prepare command arguments
+
+        logger.info("[%d/%d] Processing NAF %s...", i, len(job_files), naf_code)
+
         cmd_args = [
-            sys.executable, "builder_cli.py", "run-profile",
-            "--job", str(job_file),
-            "--input", str(input_path),
-            "--out", str(job_output_dir),
-            "--profile", args.profile,
+            sys.executable,
+            "builder_cli.py",
+            "run-profile",
+            "--job",
+            str(job_file),
+            "--input",
+            str(input_path),
+            "--out",
+            str(job_output_dir),
+            "--profile",
+            args.profile,
         ]
-        
-        # Add optional arguments
+
         if args.sample > 0:
             cmd_args.extend(["--sample", str(args.sample)])
         if args.workers != 8:
@@ -462,91 +469,95 @@ def run_batch_jobs(args):
             cmd_args.append("--verbose")
         if getattr(args, 'debug', False):
             cmd_args.append("--debug")
-        
+
         try:
-            # Execute job
             start_time = time.time()
             result = subprocess.run(
                 cmd_args,
                 cwd=Path(__file__).parent,
                 capture_output=True,
                 text=True,
-                timeout=3600  # 1 hour timeout per job
+                timeout=3600,
             )
-            
             elapsed = time.time() - start_time
-            
+
             if result.returncode == 0:
-                logger.info(f"✅ NAF {naf_code} completed successfully in {elapsed:.1f}s")
-                results.append({
-                    "naf_code": naf_code,
-                    "status": "SUCCESS",
-                    "duration": elapsed,
-                    "output_dir": str(job_output_dir)
-                })
-            else:
-                error_msg = result.stderr or result.stdout or "Unknown error"
-                logger.error(f"❌ NAF {naf_code} failed: {error_msg}")
-                failed_jobs.append(naf_code)
-                results.append({
+                logger.info("NAF %s completed successfully in %.1fs", naf_code, elapsed)
+                results.append(
+                    {
+                        "naf_code": naf_code,
+                        "status": "SUCCESS",
+                        "duration": elapsed,
+                        "output_dir": str(job_output_dir),
+                    }
+                )
+                continue
+
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            logger.error("NAF %s failed: %s", naf_code, error_msg)
+            failed_jobs.append(naf_code)
+            results.append(
+                {
                     "naf_code": naf_code,
                     "status": "FAILED",
                     "duration": elapsed,
-                    "error": error_msg
-                })
-                
-                if not args.continue_on_error:
-                    logger.error("Stopping batch processing due to error")
-                    break
-                    
+                    "error": error_msg,
+                }
+            )
+            if not args.continue_on_error:
+                raise RuntimeError(f"NAF {naf_code} failed: {error_msg}")
+
         except subprocess.TimeoutExpired:
-            logger.error(f"❌ NAF {naf_code} timed out after 1 hour")
+            logger.error("NAF %s timed out after 1 hour", naf_code)
             failed_jobs.append(naf_code)
-            results.append({
-                "naf_code": naf_code,
-                "status": "TIMEOUT",
-                "duration": 3600,
-                "error": "Job timed out"
-            })
-            
+            results.append(
+                {
+                    "naf_code": naf_code,
+                    "status": "TIMEOUT",
+                    "duration": 3600,
+                    "error": "Job timed out",
+                }
+            )
             if not args.continue_on_error:
-                logger.error("Stopping batch processing due to timeout")
-                break
-                
+                raise RuntimeError(f"NAF {naf_code} timeout")
+
         except Exception as exc:
-            logger.error(f"❌ NAF {naf_code} failed with exception: {exc}")
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            logger.exception("NAF %s failed", naf_code)
             failed_jobs.append(naf_code)
-            results.append({
-                "naf_code": naf_code,
-                "status": "ERROR",
-                "duration": 0,
-                "error": str(exc)
-            })
-            
+            results.append(
+                {
+                    "naf_code": naf_code,
+                    "status": "ERROR",
+                    "duration": 0,
+                    "error": str(exc),
+                }
+            )
             if not args.continue_on_error:
-                logger.error("Stopping batch processing due to exception")
-                break
-    
-    # Summary
+                raise
+
     successful = [r for r in results if r["status"] == "SUCCESS"]
-    logger.info(f"Batch processing completed: {len(successful)}/{len(args.naf_codes)} jobs successful")
-    
+    logger.info(
+        "Batch processing completed: %d/%d jobs successful",
+        len(successful),
+        len(args.naf_codes),
+    )
     if failed_jobs:
-        logger.warning(f"Failed NAF codes: {failed_jobs}")
-    
+        logger.warning("Failed NAF codes: %s", failed_jobs)
+
     return {
         "status": "OK" if not failed_jobs or args.continue_on_error else "FAILED",
         "total_jobs": len(args.naf_codes),
         "successful_jobs": len(successful),
         "failed_jobs": len(failed_jobs),
-        "results": results
+        "results": results,
     }
 
 
-
-def execute_steps(args, job, steps, *, suppress_output=False):
+def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
     '''Run configured pipeline steps and optionally suppress console output.'''
-    logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
+    logger = logger or pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
     ctx = build_context(args, job)
     ctx['logger'] = logger
 
@@ -639,9 +650,11 @@ def execute_steps(args, job, steps, *, suppress_output=False):
             io.log_json(ctx['logs'], kpi_status_obj)
 
         except Exception as exc:
-            if ctx.get('debug'):
-                logger.info(f"[DEBUG] KPI calculation failed: {exc}")
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            logger.exception("KPI calculation failed")
             pipeline.log_step_event(logger, 'kpi_calculation', 'error', status='FAIL', error=str(exc))
+            raise RuntimeError("KPI calculation failed") from exc
 
     if budget_tracker:
         final_budget_stats = budget_tracker.get_current_stats()
@@ -712,7 +725,7 @@ def execute_steps(args, job, steps, *, suppress_output=False):
     }
 
 
-def run_profile_multi_nafs(args, job, profile, steps):
+def run_profile_multi_nafs(args, job, profile, steps, logger):
     '''Execute the configured profile for each requested NAF code.'''
     base_outdir = Path(args.out).expanduser().resolve()
     io.ensure_dir(base_outdir)
@@ -724,7 +737,6 @@ def run_profile_multi_nafs(args, job, profile, steps):
     failures = []
     suppress_output = bool(args.json)
     total = len(runs)
-    logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
 
     for index, run in enumerate(runs, 1):
         run_job = copy.deepcopy(run['job'])
@@ -739,7 +751,7 @@ def run_profile_multi_nafs(args, job, profile, steps):
         run_args.run_id = None
 
         try:
-            result = execute_steps(run_args, run_job, steps, suppress_output=suppress_output)
+            result = execute_steps(run_args, run_job, steps, suppress_output=suppress_output, logger=logger)
             results.append(
                 {
                     'naf_code': run['naf_code'],
@@ -751,7 +763,9 @@ def run_profile_multi_nafs(args, job, profile, steps):
                 }
             )
         except Exception as exc:
-            logger.error(f"[MULTI-NAF] {run['naf_code']} failed: {exc}")
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            logger.exception('[MULTI-NAF] %s failed', run['naf_code'])
             failures.append({'naf_code': run['naf_code'], 'error': str(exc)})
             if not getattr(args, 'continue_on_error', False):
                 raise
@@ -779,7 +793,7 @@ def run_profile_multi_nafs(args, job, profile, steps):
     return summary
 
 
-def main():
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog='builder_cli')
     sub = parser.add_subparsers(dest='cmd', required=True)
 
@@ -794,10 +808,8 @@ def main():
     common.add_argument('--workers', type=int, default=8)
     common.add_argument('--json', action='store_true')
     common.add_argument('--resume', action='store_true')
-    common.add_argument('--verbose', action='store_true',
-                        help='Enable verbose logging with all process details')
-    common.add_argument('--debug', action='store_true',
-                        help='Enable debug mode with important debug information')
+    common.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
+    common.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
     common.add_argument('--max-ram-mb', type=int, default=0)
 
     run_step_parser = sub.add_parser('run-step', parents=[common])
@@ -818,60 +830,66 @@ def main():
                              help='Path to job template file (default: job_template.yaml)')
     batch_parser.add_argument('--profile', choices=list(PROFILES.keys()), default='quick',
                              help='Profile to use for jobs (default: quick)')
-    batch_parser.add_argument('--input', required=True,
-                             help='Input file for processing')
+    batch_parser.add_argument('--input', required=True, help='Input file for processing')
     batch_parser.add_argument('--output-dir', '--out-dir', required=True,
                              help='Base output directory for all jobs')
     batch_parser.add_argument('--jobs-dir', default='jobs_generated',
                              help='Directory to store generated job files (default: jobs_generated)')
-    batch_parser.add_argument('--dry-run', action='store_true',
-                             help="Generate jobs but don't run them")
-    batch_parser.add_argument('--sample', type=int, default=0,
-                             help='Sample size for testing')
-    batch_parser.add_argument('--workers', type=int, default=8,
-                             help='Number of workers')
-    batch_parser.add_argument('--verbose', action='store_true',
-                             help='Enable verbose logging with all process details')
-    batch_parser.add_argument('--debug', action='store_true',
-                             help='Enable debug mode with important debug information')
-    batch_parser.add_argument('--max-ram-mb', type=int, default=0,
-                             help='Maximum RAM budget in MB (0 = unlimited)')
-    batch_parser.add_argument('--continue-on-error', action='store_true',
-                             help='Continue processing other NAF codes if one fails')
-    batch_parser.add_argument('--json', action='store_true',
-                             help='Output results in JSON format')
+    batch_parser.add_argument('--dry-run', action='store_true', help="Generate jobs but don't run them")
+    batch_parser.add_argument('--sample', type=int, default=0, help='Sample size for testing')
+    batch_parser.add_argument('--workers', type=int, default=8, help='Number of workers')
+    batch_parser.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
+    batch_parser.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
+    batch_parser.add_argument('--max-ram-mb', type=int, default=0, help='Maximum RAM budget in MB (0 = unlimited)')
+    batch_parser.add_argument('--continue-on-error', action='store_true', help='Continue processing other NAF codes if one fails')
+    batch_parser.add_argument('--json', action='store_true', help='Output results in JSON format')
 
     sub.add_parser('resume', parents=[common])
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
 
-    if args.cmd == 'batch':
-        result = run_batch_jobs(args)
-        if getattr(args, 'json', False):
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        return
+    try:
+        if args.cmd == 'batch':
+            result = run_batch_jobs(args, logger=logger)
+            if getattr(args, 'json', False):
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
 
-    job = load_job(args.job)
+        job = load_job(args.job)
 
-    profile = None
-    if args.cmd == 'run-step':
-        steps = [args.step]
-    elif args.cmd in ('run-profile', 'resume'):
-        profile = getattr(args, 'profile', None) or job.get('profile') or 'quick'
-        steps = PROFILES[profile]
-    else:
-        steps = []
+        if args.cmd == 'run-step':
+            steps = [args.step]
+            profile = None
+        elif args.cmd in ('run-profile', 'resume'):
+            profile = getattr(args, 'profile', None) or job.get('profile') or 'quick'
+            steps = PROFILES[profile]
+        else:
+            profile = None
+            steps = []
 
-    if args.cmd == 'run-profile' and getattr(args, 'explain', False):
-        explain(steps)
-        return
+        if args.cmd == 'run-profile' and getattr(args, 'explain', False):
+            explain(steps)
+            return 0
 
-    if args.cmd == 'run-profile' and getattr(args, 'naf_codes', None):
-        run_profile_multi_nafs(args, job, profile, steps)
-        return
+        if args.cmd == 'run-profile' and getattr(args, 'naf_codes', None):
+            run_profile_multi_nafs(args, job, profile, steps, logger)
+            return 0
 
-    execute_steps(args, job, steps)
+        execute_steps(args, job, steps, logger=logger)
+        return 0
+
+    except KeyboardInterrupt:
+        logger.warning('Execution interrupted')
+        return 130
+    except (FileNotFoundError, ValueError, RuntimeError, io.IoError) as exc:
+        logger.error(str(exc))
+        return 1
+    except Exception:
+        logger.exception('Unhandled error')
+        return 1
+
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
