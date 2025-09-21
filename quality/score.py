@@ -8,6 +8,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from utils import io
 
 def _calculate_contactability(df: pd.DataFrame) -> pd.Series:
     """Calculate contactability score based on available contact information."""
@@ -190,8 +191,7 @@ def run(cfg: dict, ctx: dict) -> dict:
         "score_p90": float(df["score_quality"].quantile(0.90, interpolation="linear")),
         "duration_s": round(time.time() - t0, 3),
     }
-    with out_json.open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, ensure_ascii=False, indent=2)
+    io.write_text(out_json, json.dumps(summary, ensure_ascii=False, indent=2))
 
     return {
         "status": "OK",

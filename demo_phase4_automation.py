@@ -18,11 +18,11 @@ from dashboard.apify_dashboard import create_apify_dashboard, DashboardConfig
 def demonstrate_phase4_features():
     """Demonstrate Phase 4 automation features."""
     
-    print("🚀 Apify Automation Phase 4 Demonstration")
+    print("[DEMO] Apify Automation Phase 4 Demonstration")
     print("=" * 60)
     
     # Initialize components
-    print("\n📊 Initializing monitoring system...")
+    print("\n[INIT] Initializing monitoring system...")
     monitor = create_apify_monitor()
     
     # Configure alert manager with console output
@@ -40,11 +40,11 @@ def demonstrate_phase4_features():
     monitor.add_event_listener(alert_manager.process_monitoring_event)
     monitor.start_monitoring()
     
-    print("✅ Monitoring system initialized")
+    print("[OK] Monitoring system initialized")
     
     try:
         # Simulate various scraping operations
-        print("\n🔍 Simulating scraping operations...")
+        print("\n[SIM] Simulating scraping operations...")
         
         # Scenario 1: Successful Google Places operation
         session_1 = "demo_google_places"
@@ -59,13 +59,13 @@ def demonstrate_phase4_features():
         monitor.log_scraper_complete(session_1, {
             "status": "success",
             "results": [
-                {"name": "Le Petit Café", "address": "123 Rue de la Paix", "phone": "+33123456789"},
+                {"name": "Le Petit CafÃ©", "address": "123 Rue de la Paix", "phone": "+33123456789"},
                 {"name": "Bistro Central", "address": "456 Boulevard St-Germain", "email": "contact@bistro.fr"},
                 {"name": "Restaurant Moderne", "address": "789 Avenue des Champs", "phone": "+33198765432"}
             ],
             "estimated_cost": 45.0
         })
-        print(f"   ✅ Google Places operation completed")
+        print(f"   [OK] Google Places operation completed")
         
         # Scenario 2: LinkedIn Premium operation  
         session_2 = "demo_linkedin"
@@ -85,7 +85,7 @@ def demonstrate_phase4_features():
             ],
             "estimated_cost": 80.0
         })
-        print(f"   ✅ LinkedIn Premium operation completed")
+        print(f"   [OK] LinkedIn Premium operation completed")
         
         # Scenario 3: Error simulation
         session_3 = "demo_error"
@@ -97,13 +97,13 @@ def demonstrate_phase4_features():
         
         time.sleep(0.2)
         monitor.log_scraper_error(session_3, Exception("Rate limit exceeded"))
-        print(f"   ❌ Operation failed (simulated)")
+        print(f"   [FAIL] Operation failed (simulated)")
         
         # Give time for event processing
         time.sleep(0.5)
         
         # Check monitoring status
-        print("\n📈 Getting real-time monitoring status...")
+        print("\n[METRICS] Getting real-time monitoring status...")
         status = monitor.get_real_time_status()
         
         print(f"   Total operations: {status['overall_stats']['total_operations']}")
@@ -112,7 +112,7 @@ def demonstrate_phase4_features():
         print(f"   Active sessions: {status['overall_stats']['active_sessions']}")
         
         # Test alert system
-        print("\n🚨 Testing alert system...")
+        print("\n[ALERT] Testing alert system...")
         
         # Create high cost scenario to trigger alerts
         high_cost_data = {
@@ -131,10 +131,10 @@ def demonstrate_phase4_features():
         print(f"   Triggered {len(triggered_alerts)} alerts")
         
         for alert in triggered_alerts:
-            print(f"   🔔 {alert.severity.value.upper()}: {alert.message}")
+            print(f"   [ALERT] {alert.severity.value.upper()}: {alert.message}")
         
         # Generate performance summary
-        print("\n📊 Performance summary (last hour)...")
+        print("\n[SUMMARY] Performance summary (last hour)...")
         perf_summary = monitor.get_performance_summary(hours=1)
         
         print(f"   Operations: {perf_summary.get('total_operations', 0)}")
@@ -142,7 +142,7 @@ def demonstrate_phase4_features():
         print(f"   Average efficiency: {perf_summary.get('average_efficiency', 0):.2f} results/min")
         
         # Generate dashboard
-        print("\n🎛️  Generating dashboard...")
+        print("\n[DASHBOARD] Generating dashboard...")
         
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
@@ -151,23 +151,23 @@ def demonstrate_phase4_features():
             json_content = dashboard.export_dashboard("json", output_dir / "dashboard.json")
             text_content = dashboard.export_dashboard("text", output_dir / "dashboard.txt")
             
-            print(f"   ✅ JSON dashboard: {len(json_content)} characters")
-            print(f"   ✅ Text dashboard: {len(text_content.splitlines())} lines")
+            print(f"   [OK] JSON dashboard: {len(json_content)} characters")
+            print(f"   [OK] Text dashboard: {len(text_content.splitlines())} lines")
             
             # Try HTML generation (may have formatting issues with demo data)
             try:
                 html_content = dashboard.export_dashboard("html", output_dir / "dashboard.html")
-                print(f"   ✅ HTML dashboard: {len(html_content)} characters")
+                print(f"   [OK] HTML dashboard: {len(html_content)} characters")
             except Exception as e:
-                print(f"   ⚠️  HTML dashboard: {str(e)[:50]}... (expected with demo data)")
+                print(f"   [WARN] HTML dashboard: {str(e)[:50]}... (expected with demo data)")
             
             # Show system health
             dashboard_data = dashboard.generate_dashboard_data()
             health = dashboard_data['system_health']
-            print(f"   🏥 System health: {health['status']} ({health['score']}/100)")
+            print(f"   [HEALTH] System health: {health['status']} ({health['score']}/100)")
             
             # Show a sample of the text dashboard
-            print("\n📋 Sample dashboard output:")
+            print("\n[OUTPUT] Sample dashboard output:")
             print("-" * 40)
             lines = text_content.splitlines()[:15]  # First 15 lines
             for line in lines:
@@ -177,7 +177,7 @@ def demonstrate_phase4_features():
             print("-" * 40)
         
         # Alert summary
-        print("\n📋 Alert summary...")
+        print("\n[SUMMARY] Alert summary...")
         alert_summary = alert_manager.get_alert_summary(hours=1)
         print(f"   Total alerts: {alert_summary['total_alerts']}")
         
@@ -186,27 +186,27 @@ def demonstrate_phase4_features():
             for severity, count in alert_summary['by_severity'].items():
                 print(f"     {severity.capitalize()}: {count}")
         
-        print("\n🎯 Phase 4 demonstration completed successfully!")
-        print("   ✅ Real-time monitoring")
-        print("   ✅ Intelligent alerting") 
-        print("   ✅ Performance dashboards")
-        print("   ✅ Quality integration")
-        print("   ✅ Cost tracking")
+        print("\n[DONE] Phase 4 demonstration completed successfully!")
+        print("   [OK] Real-time monitoring")
+        print("   [OK] Intelligent alerting") 
+        print("   [OK] Performance dashboards")
+        print("   [OK] Quality integration")
+        print("   [OK] Cost tracking")
         
     except Exception as e:
-        print(f"\n❌ Error during demonstration: {e}")
+        print(f"\n[ERROR] Error during demonstration: {e}")
         import traceback
         traceback.print_exc()
         
     finally:
         monitor.stop_monitoring()
-        print("\n🔒 Monitoring system stopped")
+        print("\n[STOP] Monitoring system stopped")
 
 
 def demonstrate_performance_testing():
     """Demonstrate performance testing capabilities."""
     
-    print("\n🏃‍♂️ Performance Testing Demonstration")
+    print("\n[PERF] Performance Testing Demonstration")
     print("=" * 60)
     
     from benchmarks.performance_tests import PerformanceTestSuite, BenchmarkConfig
@@ -218,7 +218,7 @@ def demonstrate_performance_testing():
         timeout_seconds=60
     )
     
-    print("🔧 Running performance benchmarks...")
+    print("[BENCH] Running performance benchmarks...")
     suite = PerformanceTestSuite(config)
     
     try:
@@ -226,21 +226,21 @@ def demonstrate_performance_testing():
         throughput_result = suite.run_specific_benchmark(suite.benchmarks[0].benchmark_type)
         
         if throughput_result:
-            print(f"   ✅ Throughput test: {throughput_result.throughput_ops_per_second:.2f} ops/sec")
-            print(f"   ✅ Average latency: {throughput_result.average_latency_ms:.2f} ms") 
-            print(f"   ✅ Success rate: {throughput_result.success_rate:.1%}")
+            print(f"   [OK] Throughput test: {throughput_result.throughput_ops_per_second:.2f} ops/sec")
+            print(f"   [OK] Average latency: {throughput_result.average_latency_ms:.2f} ms") 
+            print(f"   [OK] Success rate: {throughput_result.success_rate:.1%}")
         
         # Generate performance report
         report = suite.generate_performance_report()
-        print(f"\n📊 Performance Grade: {report['summary']['performance_grade']}")
+        print(f"\n[PERF] Performance Grade: {report['summary']['performance_grade']}")
         
         # Show recommendations
-        print("\n💡 Recommendations:")
+        print("\n[INFO] Recommendations:")
         for rec in report['recommendations'][:3]:  # Show first 3
-            print(f"   • {rec}")
+            print(f"   - {rec}")
             
     except Exception as e:
-        print(f"❌ Performance testing error: {e}")
+        print(f"[ERROR] Performance testing error: {e}")
 
 
 if __name__ == "__main__":
@@ -250,5 +250,5 @@ if __name__ == "__main__":
     # Run performance testing demo  
     demonstrate_performance_testing()
     
-    print(f"\n🎉 Phase 4 implementation demonstration complete!")
-    print("📚 See docs/automation-guide.md for detailed usage instructions")
+    print(f"\n[DONE] Phase 4 implementation demonstration complete!")
+    print("[DOCS] See docs/automation-guide.md for detailed usage instructions")

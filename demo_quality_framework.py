@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import pandas as pd
 
+from utils import io
 from utils.contact_extractor import ContactExtractor
 from utils.quality_controller import QualityController, GoogleMapsQualityController, LinkedInQualityController
 
@@ -213,8 +214,7 @@ def demo_dashboard_export():
     print(f"Dashboard data exported to: {dashboard_path}")
     
     # Show dashboard data structure
-    with open(dashboard_path, 'r') as f:
-        dashboard_data = json.load(f)
+    dashboard_data = json.loads(io.read_text(dashboard_path))
     
     print("\nDashboard Data Structure:")
     print(f"  Summary: {dashboard_data['summary']}")
@@ -331,13 +331,12 @@ def main():
         print("\n" + "=" * 80)
         print("DEMONSTRATION SUMMARY")
         print("=" * 80)
-        print("✅ Contact extraction with confidence scoring")
-        print("✅ Quality validation for Google Maps and LinkedIn results")
-        print("✅ Automated quality filtering")
-        print("✅ Quality dashboard data export")
-        print("✅ Complete integration workflow")
-        print(f"✅ Dashboard data available at: {dashboard_path}")
-        
+        print("[OK] Contact extraction with confidence scoring")
+        print("[OK] Quality validation for Google Maps and LinkedIn results")
+        print("[OK] Automated quality filtering")
+        print("[OK] Quality dashboard data export")
+        print("[OK] Complete integration workflow")
+        print(f"[OK] Dashboard data available at: {dashboard_path}")
         print("\nKey Features Demonstrated:")
         print("- French phone number extraction and validation")
         print("- Email and website validation with confidence scoring")

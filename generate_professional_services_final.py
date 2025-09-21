@@ -9,6 +9,8 @@ import unicodedata
 
 import yaml
 
+from utils import io
+
 NAF_LABELS: Dict[str, str] = {
     "6920Z": "Activités comptables",
     "6910Z": "Activités juridiques",
@@ -132,7 +134,7 @@ DEFAULT_JOB_SPEC: Dict[str, Any] = {
 }
 
 COMMENT_AFTER_RULES = {
-    'filters:': '  # regions: ["75", "92", "93", "94"]   (optionnel) filtre par préfixe CP',
+    'filters:': '  # regions: ["75", "92", "93", "94"]   (optionnel) filtre par prÃ©fixe CP',
 }
 
 COMMENT_BEFORE_RULES = [
@@ -171,7 +173,7 @@ def _merge_dict(target: Dict[str, Any], overrides: Dict[str, Any]) -> None:
 PROFESSIONAL_SERVICES = {
     # Accounting and Financial Services
     "6920Z": {
-        "name": "Activités comptables", 
+        "name": "ActivitÃ©s comptables", 
         "seeds": [
             "https://www.experts-comptables.fr",
             "https://www.ifec.fr", 
@@ -185,7 +187,7 @@ PROFESSIONAL_SERVICES = {
     
     # Legal Services
     "6910Z": {
-        "name": "Activités juridiques",
+        "name": "ActivitÃ©s juridiques",
         "seeds": [
             "https://www.cnb.avocat.fr",
             "https://www.avocat.fr", 
@@ -222,7 +224,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "6202A": {
-        "name": "Conseil en systèmes et logiciels informatiques",
+        "name": "Conseil en systÃ¨mes et logiciels informatiques",
         "seeds": [
             "https://www.syntec-numerique.fr",
             "https://www.conseil-informatique.fr",
@@ -233,7 +235,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "6202B": {
-        "name": "Tierce maintenance de systèmes et d'applications informatiques",
+        "name": "Tierce maintenance de systÃ¨mes et d'applications informatiques",
         "seeds": [
             "https://www.syntec-numerique.fr",
             "https://www.maintenance-informatique.fr",
@@ -244,7 +246,7 @@ PROFESSIONAL_SERVICES = {
     
     # Marketing and Advertising
     "7311Z": {
-        "name": "Activités des agences de publicité",
+        "name": "ActivitÃ©s des agences de publicitÃ©",
         "seeds": [
             "https://www.aacc.fr",
             "https://www.communication.fr",
@@ -256,7 +258,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "7312Z": {
-        "name": "Régie publicitaire de médias",
+        "name": "RÃ©gie publicitaire de mÃ©dias",
         "seeds": [
             "https://www.aacc.fr",
             "https://www.regie-publicitaire.fr",
@@ -266,7 +268,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "7320Z": {
-        "name": "études de marché et sondages",
+        "name": "Ã©tudes de marchÃ© et sondages",
         "seeds": [
             "https://www.syntec-etudes.com",
             "https://www.etudes-marketing.fr",
@@ -277,7 +279,7 @@ PROFESSIONAL_SERVICES = {
     
     # Architecture and Engineering
     "7111Z": {
-        "name": "Activités d'architecture",
+        "name": "ActivitÃ©s d'architecture",
         "seeds": [
             "https://www.architectes.org",
             "https://www.cnoa.com",
@@ -288,7 +290,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "7112A": {
-        "name": "Activité des géomètres",
+        "name": "ActivitÃ© des gÃ©omÃ¨tres",
         "seeds": [
             "https://www.geometre-expert.fr",
             "https://www.ordre-geometres-experts.fr",
@@ -298,7 +300,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "7112B": {
-        "name": "Ingénierie, études techniques",
+        "name": "IngÃ©nierie, Ã©tudes techniques",
         "seeds": [
             "https://www.syntec-ingenierie.fr",
             "https://www.ingenierie.fr",
@@ -310,7 +312,7 @@ PROFESSIONAL_SERVICES = {
     
     # Real Estate
     "6831Z": {
-        "name": "Agences immobilières",
+        "name": "Agences immobiliÃ¨res",
         "seeds": [
             "https://www.fnaim.fr",
             "https://www.century21.fr",
@@ -365,7 +367,7 @@ PROFESSIONAL_SERVICES = {
     
     # Design and Creative Services
     "7410Z": {
-        "name": "Activités spécialisées de design",
+        "name": "ActivitÃ©s spÃ©cialisÃ©es de design",
         "seeds": [
             "https://www.alliance-francaise-des-designers.org",
             "https://www.design.fr",
@@ -375,7 +377,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "7420Z": {
-        "name": "Activités photographiques",
+        "name": "ActivitÃ©s photographiques",
         "seeds": [
             "https://www.photographes.fr",
             "https://www.federation-photo.fr",
@@ -386,7 +388,7 @@ PROFESSIONAL_SERVICES = {
     
     # Translation and Interpretation
     "7430Z": {
-        "name": "Traduction et interprétation",
+        "name": "Traduction et interprÃ©tation",
         "seeds": [
             "https://www.sft.fr",
             "https://www.traducteurs.fr",
@@ -397,7 +399,7 @@ PROFESSIONAL_SERVICES = {
     
     # Medical and Health Services
     "8621Z": {
-        "name": "Activité des médecins généralistes",
+        "name": "ActivitÃ© des mÃ©decins gÃ©nÃ©ralistes",
         "seeds": [
             "https://www.conseil-national.medecin.fr",
             "https://www.ordre-medecins.fr",
@@ -407,7 +409,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "8622A": {
-        "name": "Activités de radiodiagnostic et de radiothérapie",
+        "name": "ActivitÃ©s de radiodiagnostic et de radiothÃ©rapie",
         "seeds": [
             "https://www.radiologie.fr",
             "https://www.radiotherapie.fr"
@@ -416,7 +418,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "8622B": {
-        "name": "Activités chirurgicales",
+        "name": "ActivitÃ©s chirurgicales",
         "seeds": [
             "https://www.chirurgie.fr",
             "https://www.chirurgiens.fr"
@@ -425,7 +427,7 @@ PROFESSIONAL_SERVICES = {
     },
     
     "8622C": {
-        "name": "Autres activités des médecins spécialistes",
+        "name": "Autres activitÃ©s des mÃ©decins spÃ©cialistes",
         "seeds": [
             "https://www.medecins-specialistes.fr",
             "https://www.specialistes.fr"
@@ -445,7 +447,7 @@ PROFESSIONAL_SERVICES = {
     
     # Insurance and Financial Intermediation
     "6622Z": {
-        "name": "Activités des agents et courtiers d'assurances",
+        "name": "ActivitÃ©s des agents et courtiers d'assurances",
         "seeds": [
             "https://www.agea.fr",
             "https://www.courtiers-assurance.fr",
@@ -473,7 +475,7 @@ def create_professional_yaml_content(naf_code: str, service_info: Dict) -> str:
     niche_name = generate_niche_name(naf_code)
 
     if 'seeds' not in service_info or 'domains' not in service_info:
-        raise KeyError(f"Configuration incohérente pour {naf_code}: 'seeds' et 'domains' sont requis")
+        raise KeyError(f"Configuration incohÃ©rente pour {naf_code}: 'seeds' et 'domains' sont requis")
 
     seeds = _ensure_list_of_strings(service_info['seeds'], 'seeds')
     domains = _ensure_list_of_strings(service_info['domains'], 'domains')
@@ -550,12 +552,15 @@ def generate_all_professional_jobs(output_dir: Path, target_naf: Optional[Iterab
         niche_name = generate_niche_name(naf_code)
         job_file = output_dir / f"{niche_name}.yaml"
 
-        content = create_professional_yaml_content(naf_code, service_info)
+        try:
+            content = create_professional_yaml_content(naf_code, service_info)
+        except ValueError as exc:
+            print(f"[ERROR] Configuration invalide pour {naf_code}: {exc}")
+            continue
 
         try:
-            with open(job_file, "w", encoding="utf-8") as f:
-                f.write(content)
-        except OSError as exc:
+            io.write_text(job_file, content)
+        except io.IoError as exc:
             print(f"[ERROR] Echec ecriture du fichier {job_file}: {exc}")
             continue
 
@@ -568,19 +573,25 @@ def generate_all_professional_jobs(output_dir: Path, target_naf: Optional[Iterab
 
     summary_file = output_dir / "professional_services_summary.md"
     try:
-        with open(summary_file, "w", encoding="utf-8") as f:
-            f.write("# Professional Services NAF Codes Summary\n\n")
-            f.write("This document lists generated professional services job templates.\n\n")
-            for naf_code in selected_codes:
-                service_info = PROFESSIONAL_SERVICES[naf_code]
-                niche_name = generate_niche_name(naf_code)
-                f.write(f"## {naf_code} - {service_info['name']}\n")
-                f.write(f"- **File**: {niche_name}.yaml\n")
-                f.write(f"- **Seeds**: {len(service_info['seeds'])} websites\n")
-                f.write(f"- **Domains**: {len(service_info['domains'])} domains\n")
-                f.write(f"- **Example websites**: {', '.join(service_info['seeds'][:3])}\n")
-                f.write("\n")
-    except OSError as exc:
+        lines = [
+            "# Professional Services NAF Codes Summary",
+            "",
+            "This document lists generated professional services job templates.",
+            "",
+        ]
+        for naf_code in selected_codes:
+            service_info = PROFESSIONAL_SERVICES[naf_code]
+            niche_name = generate_niche_name(naf_code)
+            lines.extend([
+                f"## {naf_code} - {service_info['name']}",
+                f"- **File**: {niche_name}.yaml",
+                f"- **Seeds**: {len(service_info['seeds'])} websites",
+                f"- **Domains**: {len(service_info['domains'])} domains",
+                f"- **Example websites**: {', '.join(service_info['seeds'][:3])}",
+                "",
+            ])
+        io.write_text(summary_file, "\n".join(lines))
+    except io.IoError as exc:
         print(f"[WARN] Echec ecriture du fichier de synthese {summary_file}: {exc}")
     else:
         print(f"[OK] Fichier de synthese cree: {summary_file.name}")

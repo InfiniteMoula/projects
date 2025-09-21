@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
 import logging
 
+from utils import io
 from utils.state import SequentialRunState
 
 logger = logging.getLogger(__name__)
@@ -370,8 +371,7 @@ class ProgressTracker:
                 "timestamp": time.time()
             }
             
-            with open(self.state_file, 'w') as f:
-                json.dump(state_data, f, indent=2, default=str)
+            io.write_text(self.state_file, json.dumps(state_data, indent=2, default=str))
                 
         except Exception as e:
             logger.error(f"Failed to save progress state: {e}")
@@ -382,8 +382,7 @@ class ProgressTracker:
             return
         
         try:
-            with open(self.state_file, 'r') as f:
-                state_data = json.load(f)
+            state_data = json.loads(io.read_text(self.state_file))
             
             # Restore metrics (but don't restore transient fields)
             saved_metrics = state_data.get("metrics", {})

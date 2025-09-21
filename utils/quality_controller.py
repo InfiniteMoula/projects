@@ -15,6 +15,7 @@ import numpy as np
 from datetime import datetime
 import json
 
+from . import io
 from .contact_extractor import ContactExtractor, ContactInfo
 
 
@@ -534,8 +535,7 @@ class QualityController:
             'thresholds': {k: round(v * 100, 1) for k, v in self.thresholds.items()}
         }
         
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(dashboard_data, f, indent=2, ensure_ascii=False)
+        io.write_text(output_path, json.dumps(dashboard_data, indent=2, ensure_ascii=False))
         
         return output_path
 
