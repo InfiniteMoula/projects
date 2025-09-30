@@ -19,6 +19,7 @@ from jsonschema import ValidationError as SchemaValidationError, validate as js_
 
 import create_job
 from utils import budget_middleware, config, io, pipeline
+from utils.ua import load_user_agent_pool
 
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
@@ -26,12 +27,15 @@ STEP_REGISTRY = {
     "api.apify": "api.apify_agents:run",
     "http.static": "nethttp.collect_http_static:run",
     "http.sitemap": "nethttp.collect_sitemap:run",
+    "http.serp": "nethttp.collect_serp:run",
+    "crawl.site": "nethttp.crawl_site:run",
     "headless.collect": "headless.collect_headless:run",
     "feeds.collect": "feeds.collect_rss:run",
     "pdf.collect": "pdf.collect_pdf:run",
     "parse.html": "parse.parse_html:run",
     "parse.jsonld": "parse.parse_jsonld:run",
     "parse.pdf": "parse.parse_pdf:run",
+    "parse.contacts": "parse.parse_contacts:run",
     "normalize.standardize": "normalize.standardize:run",
     "enrich.domain": "enrich.domain_discovery:run",
     "enrich.site": "enrich.site_probe:run",
@@ -43,6 +47,7 @@ STEP_REGISTRY = {
     "quality.checks": "quality.checks:run",
     "quality.dedupe": "quality.dedupe:run",
     "quality.score": "quality.score:run",
+    "quality.enrich_score": "quality.enrich_score:run",
     "package.export": "package.exporter:run",
 }
 
@@ -53,6 +58,9 @@ STEP_DEPENDENCIES = {
     "parse.html": {"headless.collect"},
     "parse.jsonld": {"feeds.collect"},
     "parse.pdf": {"pdf.collect"},
+    "parse.contacts": {"crawl.site"},
+    "http.serp": {"enrich.address", "normalize.standardize"},
+    "crawl.site": {"http.serp"},
     "normalize.standardize": {
         "dumps.collect",
         "api.collect",
@@ -71,6 +79,7 @@ STEP_DEPENDENCIES = {
     "quality.checks": {"normalize.standardize"},
     "quality.dedupe": {"enrich.email", "normalize.standardize"},
     "quality.score": {"normalize.standardize"},
+    "quality.enrich_score": {"parse.contacts", "quality.checks"},
     "package.export": {"quality.score"},
 }
 
@@ -121,6 +130,20 @@ PROFILES = {
         "enrich.phone",
         "quality.checks",
         "quality.score",
+        "package.export",
+    ],
+    "internal": [
+        "dumps.collect",
+        "api.collect",
+        "feeds.collect",
+        "parse.jsonld",
+        "normalize.standardize",
+        "enrich.address",
+        "http.serp",
+        "crawl.site",
+        "parse.contacts",
+        "quality.checks",
+        "quality.enrich_score",
         "package.export",
     ],
 }
@@ -335,6 +358,14 @@ def build_context(args, job):
         "parallel_mode": getattr(args, 'parallel_mode', 'thread'),
         "log_lock": threading.Lock(),
     }
+    ctx["serp_timeout_sec"] = float(getattr(args, "serp_timeout_sec", 8.0))
+    ctx["max_pages_per_domain"] = int(getattr(args, "max_pages_per_domain", 12))
+    ctx["crawl_time_budget_min"] = float(getattr(args, "crawl_time_budget_min", 60.0))
+    respect = getattr(args, "respect_robots", None)
+    ctx["respect_robots"] = True if respect is None else bool(respect)
+    ua_path = getattr(args, "user_agent_pool", None)
+    ctx["user_agent_pool_path"] = str(ua_path) if ua_path else None
+    ctx["user_agent_pool"] = load_user_agent_pool(str(ua_path) if ua_path else None)
     
     # Initialize budget tracker if budgets are configured
     budget_tracker = budget_middleware.create_budget_tracker(job)
@@ -353,7 +384,7 @@ def build_context(args, job):
 
 def _prepare_process_context(ctx: dict) -> dict:
     """Return a sanitized context dictionary safe for subprocess execution."""
-    allowed = {k: v for k, v in ctx.items() if k not in {'logger', 'log_lock', 'budget_tracker', 'kpi_calculator', 'metrics_file'}}
+    allowed = {k: v for k, v in ctx.items() if k not in {'logger', 'log_lock', 'budget_tracker', 'kpi_calculator', 'metrics_file', 'user_agent_pool'}}
     return allowed
 
 
@@ -363,6 +394,8 @@ def _run_step_in_process(step_name: str, job: dict, ctx_dict: dict) -> dict:
     logger = pipeline.configure_logging(local_ctx.get('verbose', False), local_ctx.get('debug', False))
     local_ctx['logger'] = logger
     local_ctx['log_lock'] = None
+    ua_path = local_ctx.get('user_agent_pool_path')
+    local_ctx['user_agent_pool'] = load_user_agent_pool(ua_path)
     return _run_step(step_name, job, local_ctx)
 
 
@@ -936,6 +969,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='Enable parallel execution for independent steps')
     common.add_argument('--parallel-mode', choices=['thread', 'process'], default='thread',
                         help='Parallel execution mode (default: thread)')
+    common.add_argument('--serp-timeout-sec', type=float, default=8.0,
+                         help='Timeout (seconds) for SERP requests (default: 8)')
+    common.add_argument('--max-pages-per-domain', type=int, default=12,
+                         help='Maximum pages to crawl per domain (default: 12)')
+    common.add_argument('--crawl-time-budget-min', type=float, default=60.0,
+                         help='Crawl time budget in minutes (default: 60)')
+    common.add_argument('--user-agent-pool', type=Path,
+                         help='Optional path to a file containing User-Agent strings (one per line)')
+    common.add_argument('--respect-robots', dest='respect_robots', action='store_true',
+                         help='Respect robots.txt directives (default)')
+    common.add_argument('--no-respect-robots', dest='respect_robots', action='store_false',
+                         help='Ignore robots.txt directives for crawling')
+    common.set_defaults(respect_robots=None)
+
 
     run_step_parser = sub.add_parser('run-step', parents=[common])
     run_step_parser.add_argument('--step', required=True)

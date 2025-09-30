@@ -1,0 +1,24 @@
+﻿niche: "experts_comptables_internal"
+filters:
+  naf_include:
+    - "6920Z"
+kpi_targets:
+  min_quality_score: 80
+budgets:
+  time_budget_min: 90
+  ram_mb: 4096
+serp:
+  engine: "bing"
+  max_results: 5
+crawl:
+  max_pages_per_domain: 12
+  respect_robots: true
+  per_host_rps: 1
+parse:
+  prefer_mentions_legales: true
+quality:
+  email_generic_list:
+    - "contact@"
+    - "info@"
+    - "hello@"
+    - "administration@"

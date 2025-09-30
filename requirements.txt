@@ -1,4 +1,4 @@
-pandas==2.2.2
+﻿pandas==2.2.2
 pyarrow==17.0.0
 httpx==0.27.0
 beautifulsoup4==4.12.3
@@ -7,6 +7,8 @@ python-dotenv==1.0.1
 PyYAML==6.0.2
 jsonschema==4.23.0
 rapidfuzz==3.9.6
+phonenumbers==8.13.39
+readability-lxml==0.8.1
 dnspython==2.6.1
 pdfminer.six==20231228
 tldextract==5.1.2
@@ -14,6 +16,7 @@ psutil==5.9.8
 jinja2==3.1.4
 weasyprint==66.0
 apify-client==2.1.0
+pydantic==2.8.2
 # Phase 3: Advanced Features dependencies
 numpy>=1.24.0
 scikit-learn>=1.3.0
