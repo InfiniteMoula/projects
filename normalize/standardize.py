@@ -3,6 +3,7 @@
 import re
 import time
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 import pyarrow as pa
@@ -321,11 +322,326 @@ def _extract_all_columns(df: pd.DataFrame) -> dict:
     return result
 
 
-def _create_dynamic_schema(columns: dict) -> pa.Schema:
-    """Create a PyArrow schema based on the actual columns present."""
-    fields = []
-    for col_name in sorted(columns.keys()):
-        fields.append((col_name, pa.string()))
+
+
+STRUCTURED_OUTPUT_COLUMNS = [
+    "Nom entreprise",
+    "Identifiant (SIREN/SIRET/DUNS)",
+    "Forme juridique",
+    "Date de création",
+    "Secteur (NAF/APE)",
+    "Adresse complète",
+    "Région / Département",
+    "Coordonnées GPS",
+    "Téléphone standard",
+    "Email générique",
+    "Site web",
+    "Effectif",
+    "Chiffre d'affaires (fourchette)",
+    "Nom + fonction du dirigeant",
+    "Email pro vérifié du dirigeant",
+    "Technologies web",
+    "Chiffre d'affaires exact et/ou Résultat net",
+    "Croissance CA (N vs N-1)",
+    "Score de solvabilité",
+]
+
+DEPARTMENT_REGION_ENTRIES = [
+    ("01", "Auvergne-Rhône-Alpes", "Ain"),
+    ("02", "Hauts-de-France", "Aisne"),
+    ("03", "Auvergne-Rhône-Alpes", "Allier"),
+    ("04", "Provence-Alpes-Côte d'Azur", "Alpes-de-Haute-Provence"),
+    ("05", "Provence-Alpes-Côte d'Azur", "Hautes-Alpes"),
+    ("06", "Provence-Alpes-Côte d'Azur", "Alpes-Maritimes"),
+    ("07", "Auvergne-Rhône-Alpes", "Ardèche"),
+    ("08", "Grand Est", "Ardennes"),
+    ("09", "Occitanie", "Ariège"),
+    ("10", "Grand Est", "Aube"),
+    ("11", "Occitanie", "Aude"),
+    ("12", "Occitanie", "Aveyron"),
+    ("13", "Provence-Alpes-Côte d'Azur", "Bouches-du-Rhône"),
+    ("14", "Normandie", "Calvados"),
+    ("15", "Auvergne-Rhône-Alpes", "Cantal"),
+    ("16", "Nouvelle-Aquitaine", "Charente"),
+    ("17", "Nouvelle-Aquitaine", "Charente-Maritime"),
+    ("18", "Centre-Val de Loire", "Cher"),
+    ("19", "Nouvelle-Aquitaine", "Corrèze"),
+    ("2A", "Corse", "Corse-du-Sud"),
+    ("2B", "Corse", "Haute-Corse"),
+    ("21", "Bourgogne-Franche-Comté", "Côte-d'Or"),
+    ("22", "Bretagne", "Côtes-d'Armor"),
+    ("23", "Nouvelle-Aquitaine", "Creuse"),
+    ("24", "Nouvelle-Aquitaine", "Dordogne"),
+    ("25", "Bourgogne-Franche-Comté", "Doubs"),
+    ("26", "Auvergne-Rhône-Alpes", "Drôme"),
+    ("27", "Normandie", "Eure"),
+    ("28", "Centre-Val de Loire", "Eure-et-Loir"),
+    ("29", "Bretagne", "Finistère"),
+    ("30", "Occitanie", "Gard"),
+    ("31", "Occitanie", "Haute-Garonne"),
+    ("32", "Occitanie", "Gers"),
+    ("33", "Nouvelle-Aquitaine", "Gironde"),
+    ("34", "Occitanie", "Hérault"),
+    ("35", "Bretagne", "Ille-et-Vilaine"),
+    ("36", "Centre-Val de Loire", "Indre"),
+    ("37", "Centre-Val de Loire", "Indre-et-Loire"),
+    ("38", "Auvergne-Rhône-Alpes", "Isère"),
+    ("39", "Bourgogne-Franche-Comté", "Jura"),
+    ("40", "Nouvelle-Aquitaine", "Landes"),
+    ("41", "Centre-Val de Loire", "Loir-et-Cher"),
+    ("42", "Auvergne-Rhône-Alpes", "Loire"),
+    ("43", "Auvergne-Rhône-Alpes", "Haute-Loire"),
+    ("44", "Pays de la Loire", "Loire-Atlantique"),
+    ("45", "Centre-Val de Loire", "Loiret"),
+    ("46", "Occitanie", "Lot"),
+    ("47", "Nouvelle-Aquitaine", "Lot-et-Garonne"),
+    ("48", "Occitanie", "Lozère"),
+    ("49", "Pays de la Loire", "Maine-et-Loire"),
+    ("50", "Normandie", "Manche"),
+    ("51", "Grand Est", "Marne"),
+    ("52", "Grand Est", "Haute-Marne"),
+    ("53", "Pays de la Loire", "Mayenne"),
+    ("54", "Grand Est", "Meurthe-et-Moselle"),
+    ("55", "Grand Est", "Meuse"),
+    ("56", "Bretagne", "Morbihan"),
+    ("57", "Grand Est", "Moselle"),
+    ("58", "Bourgogne-Franche-Comté", "Nièvre"),
+    ("59", "Hauts-de-France", "Nord"),
+    ("60", "Hauts-de-France", "Oise"),
+    ("61", "Normandie", "Orne"),
+    ("62", "Hauts-de-France", "Pas-de-Calais"),
+    ("63", "Auvergne-Rhône-Alpes", "Puy-de-Dôme"),
+    ("64", "Nouvelle-Aquitaine", "Pyrénées-Atlantiques"),
+    ("65", "Occitanie", "Hautes-Pyrénées"),
+    ("66", "Occitanie", "Pyrénées-Orientales"),
+    ("67", "Grand Est", "Bas-Rhin"),
+    ("68", "Grand Est", "Haut-Rhin"),
+    ("69", "Auvergne-Rhône-Alpes", "Rhône"),
+    ("70", "Bourgogne-Franche-Comté", "Haute-Saône"),
+    ("71", "Bourgogne-Franche-Comté", "Saône-et-Loire"),
+    ("72", "Pays de la Loire", "Sarthe"),
+    ("73", "Auvergne-Rhône-Alpes", "Savoie"),
+    ("74", "Auvergne-Rhône-Alpes", "Haute-Savoie"),
+    ("75", "Île-de-France", "Paris"),
+    ("76", "Normandie", "Seine-Maritime"),
+    ("77", "Île-de-France", "Seine-et-Marne"),
+    ("78", "Île-de-France", "Yvelines"),
+    ("79", "Nouvelle-Aquitaine", "Deux-Sèvres"),
+    ("80", "Hauts-de-France", "Somme"),
+    ("81", "Occitanie", "Tarn"),
+    ("82", "Occitanie", "Tarn-et-Garonne"),
+    ("83", "Provence-Alpes-Côte d'Azur", "Var"),
+    ("84", "Provence-Alpes-Côte d'Azur", "Vaucluse"),
+    ("85", "Pays de la Loire", "Vendée"),
+    ("86", "Nouvelle-Aquitaine", "Vienne"),
+    ("87", "Nouvelle-Aquitaine", "Haute-Vienne"),
+    ("88", "Grand Est", "Vosges"),
+    ("89", "Bourgogne-Franche-Comté", "Yonne"),
+    ("90", "Bourgogne-Franche-Comté", "Territoire de Belfort"),
+    ("91", "Île-de-France", "Essonne"),
+    ("92", "Île-de-France", "Hauts-de-Seine"),
+    ("93", "Île-de-France", "Seine-Saint-Denis"),
+    ("94", "Île-de-France", "Val-de-Marne"),
+    ("95", "Île-de-France", "Val-d'Oise"),
+    ("971", "Guadeloupe", "Guadeloupe"),
+    ("972", "Martinique", "Martinique"),
+    ("973", "Guyane", "Guyane"),
+    ("974", "La Réunion", "La Réunion"),
+    ("975", "Saint-Pierre-et-Miquelon", "Saint-Pierre-et-Miquelon"),
+    ("976", "Mayotte", "Mayotte"),
+    ("977", "Saint-Barthélemy", "Saint-Barthélemy"),
+    ("978", "Saint-Martin", "Saint-Martin"),
+    ("984", "Terres australes et antarctiques françaises", "Terres australes et antarctiques françaises"),
+    ("986", "Wallis-et-Futuna", "Wallis-et-Futuna"),
+    ("987", "Polynésie française", "Polynésie française"),
+    ("988", "Nouvelle-Calédonie", "Nouvelle-Calédonie"),
+    ("989", "Îles Éparses", "Îles Éparses"),
+]
+
+DEPARTMENT_REGION_MAP = {code: (region, department) for code, region, department in DEPARTMENT_REGION_ENTRIES}
+
+
+def _clean_value(value):
+    if value is None:
+        return None
+    if value is pd.NA:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            cleaned = _clean_value(item)
+            if cleaned:
+                items.append(cleaned)
+        return '; '.join(items) if items else None
+    if isinstance(value, str):
+        value_str = value.strip()
+        if not value_str:
+            return None
+        if value_str.lower() == 'nan':
+            return None
+        return value_str
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    value_str = str(value).strip()
+    if not value_str or value_str.lower() == 'nan':
+        return None
+    return value_str
+
+
+def _select_first_non_empty(row: pd.Series, candidates: Sequence[str]):
+    for col in candidates:
+        if col in row.index:
+            value = _clean_value(row.get(col))
+            if value:
+                return value
+    return None
+
+
+def _compose_sector(row: pd.Series):
+    code = _select_first_non_empty(row, ['naf', 'naf_code', 'code_naf', 'activiteprincipaleregistremetiersetablissement'])
+    label = _select_first_non_empty(row, ['libelle_naf', 'libelleactiviteprincipaleetablissement', 'libelle_activite', 'libelleactiviteprincipaleunitelegale'])
+    if code and label:
+        normalized_label = label.strip()
+        if normalized_label.lower().startswith(code.lower()):
+            return code
+        return f"{code} - {normalized_label}"
+    return code or label
+
+
+def _compose_full_address(row: pd.Series):
+    street_parts = []
+    for col in ['numero_voie', 'type_voie', 'libelle_voie']:
+        part = _clean_value(row.get(col))
+        if part:
+            street_parts.append(part)
+    street = ' '.join(street_parts).strip()
+    complement = _select_first_non_empty(row, ['complement_adresse', 'complementadresse2etablissement'])
+    postal = _select_first_non_empty(row, ['code_postal', 'cp', 'codepostal2etablissement'])
+    city = _select_first_non_empty(row, ['commune', 'ville', 'libellecommune2etablissement'])
+    country = _select_first_non_empty(row, ['libellepaysetrangeretablissement', 'libellepaysetranger2etablissement', 'pays'])
+    components = []
+    if street:
+        components.append(street)
+    if complement:
+        components.append(complement)
+    locality_parts = [postal, city]
+    locality = ' '.join(part for part in locality_parts if part)
+    if locality:
+        components.append(locality)
+    if country:
+        components.append(country)
+    return ', '.join(components) if components else None
+
+
+def _extract_department_code(row: pd.Series):
+    dept = _clean_value(row.get('departement'))
+    postal = _clean_value(row.get('code_postal')) or _clean_value(row.get('cp'))
+    dept_code = None
+    if dept:
+        dept_code = dept.upper()
+        if dept_code == '97' and postal:
+            dept_code = postal[:3]
+        elif dept_code.isdigit() and len(dept_code) == 1:
+            dept_code = dept_code.zfill(2)
+    if not dept_code and postal:
+        if postal.startswith('97') and len(postal) >= 3:
+            dept_code = postal[:3]
+        else:
+            dept_code = postal[:2]
+    return dept_code
+
+
+def _compose_region_departement(row: pd.Series):
+    dept_code = _extract_department_code(row)
+    if not dept_code:
+        return None
+    info = DEPARTMENT_REGION_MAP.get(dept_code)
+    if info:
+        region, department = info
+        return f"{region} / {department}"
+    return f"Département {dept_code}"
+
+
+def _compose_coordinates(row: pd.Series):
+    lat = None
+    for col in ['latitude', 'lat', 'latitude_wgs84', 'coordonnees_gps_latitude']:
+        lat = _clean_value(row.get(col))
+        if lat:
+            break
+    lon = None
+    for col in ['longitude', 'lon', 'longitude_wgs84', 'coordonnees_gps_longitude']:
+        lon = _clean_value(row.get(col))
+        if lon:
+            break
+    if lat and lon:
+        return f"{lat}, {lon}"
+    combined = _clean_value(row.get('coordonnees_gps'))
+    return combined
+
+
+def _compose_executive(row: pd.Series):
+    prenom = _select_first_non_empty(row, ['dirigeant_prenom', 'prenom', 'prenoms'])
+    nom = _select_first_non_empty(row, ['dirigeant_nom', 'nom'])
+    fonction = _select_first_non_empty(row, ['dirigeant_fonction', 'fonction_dirigeant', 'qualite'])
+    name_parts = [part for part in [prenom, nom] if part]
+    full_name = ' '.join(name_parts) if name_parts else None
+    if full_name and fonction:
+        return f"{full_name} ({fonction})"
+    return full_name
+
+
+def _compose_financials(row: pd.Series):
+    chiffre = _select_first_non_empty(row, ['chiffre_affaires', 'ca_exact', 'ca'])
+    resultat = _select_first_non_empty(row, ['resultat_net', 'benefice_net', 'resultat'])
+    if chiffre and resultat:
+        return f"CA {chiffre}; Résultat net {resultat}"
+    if chiffre:
+        return f"CA {chiffre}"
+    if resultat:
+        return f"Résultat net {resultat}"
+    return None
+
+
+def _build_series(df: pd.DataFrame, func):
+    if df.empty:
+        return pd.Series([], index=df.index, dtype='string')
+    values = df.apply(func, axis=1)
+    series = values.astype('string')
+    series = series.str.strip()
+    series = series.replace('', pd.NA)
+    return series
+
+
+def _compute_structured_columns(df: pd.DataFrame) -> dict[str, pd.Series]:
+    return {
+        'Nom entreprise': _build_series(df, lambda row: _select_first_non_empty(row, ['denomination', 'denomination_usuelle', 'enseigne', 'raison_sociale', 'nom'])),
+        'Identifiant (SIREN/SIRET/DUNS)': _build_series(df, lambda row: _select_first_non_empty(row, ['siret', 'siren', 'duns'])),
+        'Forme juridique': _build_series(df, lambda row: _select_first_non_empty(row, ['forme_juridique', 'formejuridique', 'categorie_juridique', 'categorie_juridique_unite_legale'])),
+        'Date de création': _build_series(df, lambda row: _select_first_non_empty(row, ['date_creation', 'date_immatriculation', 'datedebut', 'date_creation_unite_legale'])),
+        'Secteur (NAF/APE)': _build_series(df, _compose_sector),
+        'Adresse complète': _build_series(df, _compose_full_address),
+        'Région / Département': _build_series(df, _compose_region_departement),
+        'Coordonnées GPS': _build_series(df, _compose_coordinates),
+        'Téléphone standard': _build_series(df, lambda row: _select_first_non_empty(row, ['telephone_norm', 'telephone', 'tel', 'phone'])),
+        'Email générique': _build_series(df, lambda row: _select_first_non_empty(row, ['email', 'mail', 'email_contact'])),
+        'Site web': _build_series(df, lambda row: _select_first_non_empty(row, ['siteweb', 'website', 'url'])),
+        'Effectif': _build_series(df, lambda row: _select_first_non_empty(row, ['effectif', 'tranche_effectif', 'effectif_salarie', 'anneeeffectifsetablissement'])),
+        "Chiffre d'affaires (fourchette)": _build_series(df, lambda row: _select_first_non_empty(row, ['ca_tranche', 'chiffre_affaires_fourchette', 'chiffre_affaires_tranche'])),
+        'Nom + fonction du dirigeant': _build_series(df, _compose_executive),
+        'Email pro vérifié du dirigeant': _build_series(df, lambda row: _select_first_non_empty(row, ['dirigeant_email', 'email_dirigeant', 'email_dirigeant_verifie'])),
+        'Technologies web': _build_series(df, lambda row: _select_first_non_empty(row, ['technologies_web', 'web_technologies', 'technologies'])),
+        "Chiffre d'affaires exact et/ou Résultat net": _build_series(df, _compose_financials),
+        'Croissance CA (N vs N-1)': _build_series(df, lambda row: _select_first_non_empty(row, ['croissance_ca', 'variation_ca', 'evolution_ca'])),
+        'Score de solvabilité': _build_series(df, lambda row: _select_first_non_empty(row, ['score_solvabilite', 'solvabilite_score', 'score_risque'])),
+    }
+
+
+def _create_dynamic_schema(columns: Sequence[str]) -> pa.Schema:
+    """Create a PyArrow schema preserving column order."""
+    fields = [pa.field(col_name, pa.string()) for col_name in columns]
     return pa.schema(fields)
 
 
@@ -461,25 +777,29 @@ def run(cfg: dict, ctx: dict) -> dict:
 
             # Create DataFrame with all extracted data
             res = pd.DataFrame(extracted_data)
-            
+
             # Ensure we have at least the basic required columns for compatibility
             required_cols = ['siren', 'siret']
             for col in required_cols:
                 if col not in res.columns:
                     res[col] = pd.Series(pd.NA, index=res.index, dtype="string")
 
+            structured_columns = _compute_structured_columns(res)
+            for col_name, series in structured_columns.items():
+                res[col_name] = series
+
+            column_order = STRUCTURED_OUTPUT_COLUMNS + [col for col in res.columns if col not in STRUCTURED_OUTPUT_COLUMNS]
+
             rows_written = len(res)
             total += rows_written
             if rows_written == 0:
                 continue
 
-            # Create or update dynamic schema
             if dynamic_schema is None:
-                dynamic_schema = _create_dynamic_schema(extracted_data)
+                dynamic_schema = _create_dynamic_schema(column_order)
                 pq_writer = ParquetBatchWriter(out_parquet, schema=dynamic_schema)
                 csv_writer = ArrowCsvWriter(out_csv)
 
-            # Ensure DataFrame columns are in the same order as schema
             schema_columns = [field.name for field in dynamic_schema]
             res = res.reindex(columns=schema_columns, fill_value=pd.NA)
 

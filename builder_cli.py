@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import copy
 import json
 import os
@@ -144,6 +144,7 @@ PROFILES = {
         "parse.contacts",
         "quality.checks",
         "quality.enrich_score",
+        "quality.score",
         "package.export",
     ],
 }
@@ -1065,4 +1066,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
