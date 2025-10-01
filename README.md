@@ -81,7 +81,7 @@ python builder_cli.py run-profile \
 # Complete enrichment with all features
 python builder_cli.py run-profile \
   --job jobs/experts_comptables.yaml \
-  --input data/sirene_latest.parquet \
+  --input data/sirene_sample.parquet \
   --out out/experts_comptables \
   --profile standard
 ```
