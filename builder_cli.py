@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import copy
 import json
 import os
@@ -24,7 +24,6 @@ from utils.ua import load_user_agent_pool
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
     "api.collect": "api.collect_api:run",
-    "api.apify": "api.apify_agents:run",
     "http.static": "nethttp.collect_http_static:run",
     "http.sitemap": "nethttp.collect_sitemap:run",
     "http.serp": "nethttp.collect_serp:run",
@@ -75,7 +74,6 @@ STEP_DEPENDENCIES = {
     "enrich.phone": {"enrich.google_maps"},
     "enrich.address": {"normalize.standardize"},
     "enrich.google_maps": {"enrich.address"},
-    "api.apify": {"enrich.address"},  # Apify agents depend on address extraction (step 7)
     "quality.checks": {"normalize.standardize"},
     "quality.dedupe": {"enrich.email", "normalize.standardize"},
     "quality.score": {"normalize.standardize"},
@@ -99,7 +97,6 @@ PROFILES = {
         "parse.jsonld",
         "normalize.standardize",
         "enrich.address",
-        "api.apify",  # Apify agents after address extraction
         "enrich.google_maps",
         "enrich.domain",
         "enrich.site",
@@ -121,7 +118,6 @@ PROFILES = {
         "parse.jsonld",
         "normalize.standardize",
         "enrich.address",
-        "api.apify",  # Apify agents after address extraction
         "enrich.google_maps",
         "enrich.domain",
         "enrich.site",
@@ -1066,5 +1062,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-

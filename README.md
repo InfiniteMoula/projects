@@ -38,7 +38,6 @@ A comprehensive business data intelligence pipeline that transforms raw business
 
 - **🤖 Intelligent Data Enrichment**: Multi-source business intelligence gathering
 - **🌐 Advanced Web Scraping**: Static pages, dynamic content, sitemaps, PDFs, RSS feeds
-- **🔧 Apify Platform Integration**: Professional Google Places, Google Maps, and LinkedIn scrapers
 - **📧 Contact Discovery**: Smart email discovery, phone normalization, website validation  
 - **👔 Executive Intelligence**: CEO, CFO, Directors and Founder information via LinkedIn
 - **🎯 Quality Control**: Comprehensive scoring, validation checks, and confidence ratings
@@ -61,7 +60,6 @@ pip install -r requirements.txt
 
 # Configure environment (optional for basic use)
 cp .env.example .env
-# Edit .env with your API keys (APIFY_API_TOKEN, HUNTER_API_KEY)
 ```
 
 ### 2. Run Your First Enrichment
@@ -103,7 +101,6 @@ python builder_cli.py run-profile \
 pip install -r requirements.txt
 ```
 
-**Key Dependencies**: `pandas`, `httpx`, `beautifulsoup4`, `PyYAML`, `psutil`, `weasyprint`, `apify-client`
 
 ### Environment Setup (Optional)
 
@@ -114,12 +111,10 @@ For advanced features, configure API access:
 cp .env.example .env
 
 # Edit .env with your credentials:
-# APIFY_API_TOKEN=your_apify_token_here     # For Apify platform scrapers
 # HUNTER_API_KEY=your_hunter_key_here       # For email validation
 # HTTP_PROXY=http://proxy:port              # Optional proxy settings
 ```
 
-> **Note**: Basic web scraping works without API keys. Apify integration requires an [Apify account](https://console.apify.com/account/integrations).
 
 ## Processing Profiles
 
@@ -139,11 +134,10 @@ steps: ["dumps.collect", "api.collect", "normalize.standardize", "quality.checks
 **Best for**: Balanced processing with comprehensive enrichment
 ```yaml
 steps: ["dumps.collect", "api.collect", "feeds.collect", "parse.jsonld", "normalize.standardize", 
-        "enrich.address", "api.apify", "enrich.google_maps", "enrich.domain", "enrich.site", 
+        "enrich.address", "enrich.google_maps", "enrich.domain", "enrich.site",
         "enrich.dns", "enrich.email", "enrich.phone", "quality.checks", "quality.score", "package.export"]
 ```
 - ✅ Web scraping and sitemap discovery
-- ✅ **Apify platform integration** (Google Maps, LinkedIn)
 - ✅ Domain and email enrichment
 - ✅ Contact discovery and validation
 - ✅ Comprehensive quality control
@@ -167,11 +161,8 @@ steps: ["dumps.collect", "api.collect", "feeds.collect", "parse.jsonld", "normal
 
 ### 📚 Complete Documentation Suite
 
-- **[Apify Setup & Usage Guide](docs/apify-setup-guide.md)** - Complete Apify platform integration
 - **[Scraping Methods Guide](docs/scraping-methods-guide.md)** - Web scraping, APIs, and data sources  
 - **[Technical Implementation Details](docs/technical-implementation-details.md)** - Technical implementation details
-- **[Apify Troubleshooting](docs/apify-troubleshooting.md)** - Advanced troubleshooting and optimization
-- **[Apify Implementation Details](docs/apify-implementation-details.md)** - Deep technical architecture
 
 ### 🔧 Quick References
 
@@ -235,8 +226,6 @@ filters:
   naf_include: ["6920Z"]  # Business category codes
   regions: ["75", "92"]   # Geographic regions (optional)
 
-# Apify platform integration
-apify:
   enabled: true
   max_addresses: 50
   google_places:
@@ -265,7 +254,6 @@ The system processes data through these main stages:
 ### 1. Data Collection
 - **dumps.collect**: Load and filter SIRENE database
 - **api.collect**: External API data collection
-- **api.apify**: Apify platform scrapers (Google Maps, LinkedIn)
 - **http.static**: Web scraping
 - **feeds.collect**: RSS/Atom feeds
 
@@ -378,7 +366,6 @@ HTTP_PROXY=http://proxy:port
 
 **API Rate Limits**: Reduce request rates in job configuration
 ```yaml
-apify:
   google_places:
     max_places_per_search: 5  # Reduce from default 10
 ```

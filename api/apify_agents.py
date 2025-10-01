@@ -19,8 +19,12 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import pandas as pd
-from apify_client import ApifyClient
-
+try:
+    from apify_client import ApifyClient  # type: ignore
+    APIFY_AVAILABLE = True
+except ImportError:
+    ApifyClient = Any  # type: ignore
+    APIFY_AVAILABLE = False
 from utils import io
 from utils.parquet import ParquetBatchWriter
 from utils.address_processor import AddressProcessor
@@ -66,12 +70,15 @@ def _extract_priorities_from_config(cfg: dict, ctx: dict) -> List[ConfigPriority
     return priorities
 
 
-def _get_apify_client() -> ApifyClient:
+def _get_apify_client() -> "ApifyClient":
     """Get configured Apify client."""
-    api_token = os.getenv('APIFY_API_TOKEN')
+    if not APIFY_AVAILABLE:
+        raise RuntimeError("Apify integration is disabled (apify client library not installed)")
+
+    api_token = os.getenv("APIFY_API_TOKEN")
     if not api_token:
         raise ValueError("APIFY_API_TOKEN environment variable is required")
-    
+
     return ApifyClient(api_token)
 
 
