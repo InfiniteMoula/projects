@@ -47,4 +47,5 @@ disallow_untyped_defs = false
 
 [tool.mypy."utils.*"]
 disallow_untyped_defs = false
-
+[tool.pytest.ini_options]
+pythonpath = ['.']
