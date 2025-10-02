@@ -8,6 +8,42 @@ from jinja2 import Environment, FileSystemLoader
 import weasyprint
 from utils import io, hashx
 
+CURATED_COLUMN_SPECS = [
+    ('Nom entreprise', ['Nom entreprise', 'denomination_usuelle', 'enseigne']),
+    ('Identifiant (SIREN/SIRET/DUNS)', ['Identifiant (SIREN/SIRET/DUNS)', 'siret', 'siren']),
+    ('Forme juridique', ['Forme juridique']),
+    ('Date de création', ['Date de création', 'date_creation']),
+    ('Secteur (NAF/APE)', ['Secteur (NAF/APE)', 'naf', 'naf_code']),
+    ('Adresse', ['Adresse', 'Adresse complète', 'adresse_complete']),
+    ('Région / Département', ['Région / Département']),
+    ('Téléphone standard', ['Téléphone standard', 'telephone_norm']),
+    ('Email générique', ['Email générique', 'best_email']),
+    ('Site web', ['Site web', 'siteweb']),
+    ('Effectif', ['Effectif', 'effectif']),
+    ('CA', ['CA', "Chiffre d'affaires exact et/ou Résultat net", "Chiffre d'affaires (fourchette)"]),
+    ('Nom + fonction du dirigeant', ['Nom + fonction du dirigeant']),
+    ('Email pro vérifié', ['Email pro vérifié', 'Email pro vérifié du dirigeant']),
+    ('Technologies web', ['Technologies web']),
+    ('Score de solvabilité', ['Score de solvabilité', 'score_quality']),
+    ('Croissance CA (N vs N-1)', ['Croissance CA (N vs N-1)']),
+]
+
+CURATED_COLUMN_ORDER = [name for name, _ in CURATED_COLUMN_SPECS]
+
+def _coalesce_columns(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
+    existing = [df[col] for col in candidates if col in df.columns]
+    if not existing:
+        return pd.Series([pd.NA] * len(df), index=df.index, dtype='object')
+    result = existing[0].copy()
+    for series in existing[1:]:
+        result = result.combine_first(series)
+    return result
+
+def build_curated_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    curated = pd.DataFrame(index=df.index)
+    for output_name, sources in CURATED_COLUMN_SPECS:
+        curated[output_name] = _coalesce_columns(df, sources)
+    return curated
 
 def merge_quality_data(outdir_path: Path) -> pd.DataFrame:
     """Merge deduped data with quality scores and address enrichment."""
@@ -188,29 +224,47 @@ def run(cfg, ctx):
     
     try:
         # Merge quality data with main dataset
-        df = merge_quality_data(outdir_path)
-        
+        merged_df = merge_quality_data(outdir_path)
+
+        # Calculate metrics before reducing to curated columns
+        quality_metrics = calculate_quality_metrics(merged_df)
+
+        # Keep only curated columns required by the business specification
+        df = build_curated_dataset(merged_df)
+
         # Sort data consistently
-        sort_columns = [c for c in ["siren", "raison_sociale"] if c in df.columns]
+        sort_columns = [c for c in ["Nom entreprise", "Identifiant (SIREN/SIRET/DUNS)"] if c in df.columns]
         if sort_columns:
             df = df.sort_values(by=sort_columns, kind="mergesort")
-        
+
         # Write output files
         csv_path = outdir_path / "dataset.csv"
         parquet_path = outdir_path / "dataset.parquet"
-        
-        # Ensure string columns remain as strings (important for postal codes, departments, etc.)
-        string_columns = ['siren', 'siret', 'code_postal', 'departement', 'forme_juridique', 
-                         'telephone_norm', 'naf', 'naf_code']
+
+        # Ensure key identifier columns remain strings (preserve leading zeros)
+        string_columns = [
+            "Nom entreprise",
+            "Identifiant (SIREN/SIRET/DUNS)",
+            "Forme juridique",
+            "Adresse",
+            "Région / Département",
+            "Téléphone standard",
+            "Email générique",
+            "Site web",
+            "Nom + fonction du dirigeant",
+            "Email pro vérifié",
+            "Technologies web",
+            "Secteur (NAF/APE)",
+            "CA",
+        ]
         for col in string_columns:
             if col in df.columns:
-                df[col] = df[col].astype(str)
-        
+                df[col] = df[col].astype("string")
+
         df.to_csv(csv_path, index=False, encoding="utf-8")
         pq.write_table(pa.Table.from_pandas(df), parquet_path, compression="snappy")
-        
-        # Calculate metrics and data dictionary
-        quality_metrics = calculate_quality_metrics(df)
+
+        # Calculate data dictionary on curated output
         data_dictionary = calculate_data_dictionary(df)
         
         # Calculate file hashes

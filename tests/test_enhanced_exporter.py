@@ -145,7 +145,9 @@ def test_enhanced_exporter_run(temp_outdir):
     # Check CSV content
     csv_df = pd.read_csv(temp_outdir / "dataset.csv")
     assert len(csv_df) == 2
-    assert 'score_quality' in csv_df.columns
+    assert list(csv_df.columns) == exporter.CURATED_COLUMN_ORDER
+    assert 'Score de solvabilité' in csv_df.columns
+    assert csv_df['Score de solvabilité'].iloc[0] == pytest.approx(0.875)
     
     # Check manifest content
     with open(temp_outdir / "manifest.json") as f:
@@ -202,3 +204,4 @@ def test_exporter_with_no_data_files(temp_outdir):
     # Should fail gracefully
     assert result['status'] == 'FAIL'
     assert 'error' in result
+

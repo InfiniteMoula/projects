@@ -677,11 +677,12 @@ def run(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
         io.write_json(metrics_path, {})
         io.write_json(html_index_path, {})
         return {
-            "status": "DRY_RUN",
+            "status": "OK",
             "file": str(parquet_path),
             "rows": 0,
             "duration_s": round(time.time() - t0, 3),
             "metrics_file": str(metrics_path),
+            "dry_run": True,
         }
 
     input_path = Path(cfg.get("input_path") or outdir / "normalized.parquet")
