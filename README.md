@@ -351,6 +351,27 @@ python builder_cli.py run-profile \
 
 ## Troubleshooting
 
+### Reducing Google Maps 429 (Too Many Requests)
+- Add the `scraper.maps` block to your job (or use the updated template) to throttle Google Maps at ~0.4 RPS with a 2-5 s post-request delay.
+  ```yaml
+  scraper:
+    maps:
+      per_host_rps: 0.4
+      delay_range: [2.0, 5.0]
+      proxy:
+        enabled: true
+        use_env: true
+  ```
+- Provide proxy credentials via the standard environment variables before launching `builder_cli.py` (PowerShell example):
+  ```powershell
+  $env:HTTP_PROXY = 'http://user:pass@host:port'
+  $env:HTTPS_PROXY = 'http://user:pass@host:port'
+  ```
+  You can override or disable at runtime with `MAPS_DISABLE_PROXY=1`.
+- Tune the throttling without editing code by exporting `MAPS_PER_HOST_RPS` (e.g. `0.3`) or `MAPS_DELAY_RANGE` (e.g. "2.0,5.0").
+- For validation runs, limit the workload with `--sample 20` or temporarily skip the stage with `--skip scraper.maps`.
+- Inspect `maps/metrics.json` for `configured_per_host_rps`, `runtime_s`, `avg_rate_limit_sleep_s`, and `avg_delay_sleep_s` to confirm the proxy/throttling behaviour and reduced 429s.
+
 ### Common Issues
 
 **Memory Issues**: Reduce `--workers`, set `--max-ram-mb`, use `--sample`

@@ -87,6 +87,170 @@ class ScrapeContext:
     postal_code: str
 
 
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _coerce_optional_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _first_non_empty(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        text_value = str(value).strip()
+        if text_value:
+            return text_value
+    return None
+
+
+def _normalize_delay_range(value: Any) -> Optional[Tuple[float, float]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        separators = (",", ";")
+        for sep in separators:
+            if sep in cleaned:
+                parts = [part.strip() for part in cleaned.split(sep)]
+                break
+        else:
+            parts = [cleaned]
+        if len(parts) != 2:
+            return None
+        try:
+            start = float(parts[0])
+            end = float(parts[1])
+        except ValueError:
+            return None
+        start = max(0.0, start)
+        end = max(start, end)
+        return start, end
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            start = float(value[0])
+            end = float(value[1])
+        except (TypeError, ValueError):
+            return None
+        start = max(0.0, start)
+        end = max(start, end)
+        return start, end
+    return None
+
+
+def _extract_maps_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    scraper_cfg = cfg.get('scraper')
+    if isinstance(scraper_cfg, dict):
+        for key in ('maps', 'maps_scraper', 'google_maps'):
+            sub_cfg = scraper_cfg.get(key)
+            if isinstance(sub_cfg, dict):
+                return sub_cfg
+    dotted_cfg = cfg.get('scraper.maps')
+    if isinstance(dotted_cfg, dict):
+        return dotted_cfg
+    legacy_cfg = cfg.get('scraper_maps')
+    if isinstance(legacy_cfg, dict):
+        return legacy_cfg
+    return {}
+
+
+def _resolve_delay_range(cfg: Dict[str, Any], step_cfg: Dict[str, Any], default: Tuple[float, float]) -> Tuple[float, float]:
+    env_value = os.getenv('MAPS_DELAY_RANGE')
+    parsed_env = _normalize_delay_range(env_value)
+    if parsed_env:
+        return parsed_env
+    for candidate in (
+        step_cfg.get('delay_range'),
+        step_cfg.get('maps_delay_range'),
+        cfg.get('maps_delay_range'),
+        cfg.get('delay_range'),
+    ):
+        parsed = _normalize_delay_range(candidate)
+        if parsed:
+            return parsed
+    return default
+
+
+def _resolve_per_host_rps(cfg: Dict[str, Any], step_cfg: Dict[str, Any], default: float = 1.0) -> float:
+    env_value = os.getenv('MAPS_PER_HOST_RPS')
+    if env_value:
+        try:
+            return max(0.0, float(env_value))
+        except ValueError:
+            pass
+    for source in (step_cfg, cfg):
+        for key in ('maps_per_host_rps', 'per_host_rps'):
+            if key not in source:
+                continue
+            value = source.get(key)
+            if value is None:
+                continue
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                continue
+    return max(0.0, float(default))
+
+
+def _resolve_proxy_settings(cfg: Dict[str, Any], step_cfg: Dict[str, Any]) -> Dict[str, str]:
+    proxies_cfg: Dict[str, Any] = {}
+    raw_proxy_cfg = step_cfg.get('proxy') or step_cfg.get('proxies')
+    if isinstance(raw_proxy_cfg, dict):
+        proxies_cfg = raw_proxy_cfg
+    if _coerce_optional_bool(os.getenv('MAPS_DISABLE_PROXY')) is True:
+        return {}
+    enabled_flag = _coerce_optional_bool(proxies_cfg.get('enabled'))
+    if enabled_flag is False:
+        return {}
+    global_proxy_cfg = cfg.get('proxies')
+    if not isinstance(global_proxy_cfg, dict):
+        global_proxy_cfg = {}
+    use_env_flag = _coerce_optional_bool(proxies_cfg.get('use_env'))
+    use_env = True if use_env_flag is None else use_env_flag
+    env_http = env_https = None
+    if use_env:
+        env_http = _first_non_empty(os.getenv('MAPS_HTTP_PROXY'), os.getenv('HTTP_PROXY'), os.getenv('http_proxy'))
+        env_https = _first_non_empty(os.getenv('MAPS_HTTPS_PROXY'), os.getenv('HTTPS_PROXY'), os.getenv('https_proxy'))
+    shared_url = _first_non_empty(
+        os.getenv('MAPS_PROXY_URL'),
+        proxies_cfg.get('url'),
+        proxies_cfg.get('server'),
+        step_cfg.get('proxy_url'),
+        global_proxy_cfg.get('url'),
+    )
+    http_proxy = _first_non_empty(
+        env_http,
+        proxies_cfg.get('http'),
+        global_proxy_cfg.get('http'),
+        step_cfg.get('http_proxy'),
+        cfg.get('http_proxy'),
+        shared_url,
+    )
+    https_proxy = _first_non_empty(
+        env_https,
+        proxies_cfg.get('https'),
+        global_proxy_cfg.get('https'),
+        step_cfg.get('https_proxy'),
+        cfg.get('https_proxy'),
+        shared_url,
+    )
+    return {k: v for k, v in {'http': http_proxy, 'https': https_proxy}.items() if v}
+
+
 def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
@@ -162,12 +326,18 @@ class MapsScraper:
         self._languages = list(ACCEPT_LANGUAGES)
         self._degraded = False
         self._delay_override: Optional[Tuple[float, float]] = None
+        self._configured_rps = per_host_rps
+        self._configured_delay_range = delay_range
+        self._proxy_enabled = bool(self._proxies)
+        self._runtime_start = time.monotonic()
         self._metrics: Dict[str, float] = {
             "requests_made": 0,
             "cache_hits": 0,
             "retries": 0,
             "blocks_detected": 0,
             "sleep_seconds": 0.0,
+            "rate_limit_sleep_seconds": 0.0,
+            "delay_sleep_seconds": 0.0,
             "playwright_requests": 0,
         }
         self._html_dir = Path(html_dir) if html_dir else None
@@ -264,6 +434,7 @@ class MapsScraper:
         for attempt in range(self._max_retries + 1):
             wait = self._rate_limiter.wait("www.google.com")
             if wait > 0:
+                self._metrics["rate_limit_sleep_seconds"] += wait
                 self._metrics["sleep_seconds"] += wait
             headers = {
                 "User-Agent": self._ua_pool.get(),
@@ -286,7 +457,10 @@ class MapsScraper:
                     self._metrics["blocks_detected"] += 1
                     degraded = True
                     raise RuntimeError("blocked by Google")
-                sleep_with_jitter(self._current_delay_range(degraded))
+                post_sleep = sleep_with_jitter(self._current_delay_range(degraded))
+                if post_sleep > 0:
+                    self._metrics["delay_sleep_seconds"] += post_sleep
+                    self._metrics["sleep_seconds"] += post_sleep
                 return html, str(response.url)
             except Exception as exc:  # pragma: no cover - network errors
                 last_exception = exc
@@ -300,12 +474,14 @@ class MapsScraper:
         return None, None
 
     def _looks_blocked(self, html: str) -> bool:
-        blocked_signals = (
-            "Our systems have detected unusual traffic",
-            "detected unusual traffic",
-            "sorry" in html.lower() and "Google" in html,
+        if not html:
+            return False
+        lower = html.lower()
+        return (
+            "our systems have detected unusual traffic" in lower
+            or "detected unusual traffic" in lower
+            or ("sorry" in lower and "google" in lower)
         )
-        return any(signal in html for signal in blocked_signals)
 
     def _current_delay_range(self, degraded: bool) -> Tuple[float, float]:
         if self._delay_override:
@@ -631,15 +807,27 @@ class MapsScraper:
         return round(final_score * 100.0, 2)
 
     def _snapshot_metrics(self) -> Dict[str, Any]:
-        total_requests = max(1.0, self._metrics["requests_made"])
+        requests = int(self._metrics["requests_made"])
+        divisor = requests if requests > 0 else 1
+        runtime = max(0.0, time.monotonic() - self._runtime_start)
         return {
-            "requests_made": int(self._metrics["requests_made"]),
+            "requests_made": requests,
             "cache_hits": int(self._metrics["cache_hits"]),
             "retries": int(self._metrics["retries"]),
             "blocks_detected": int(self._metrics["blocks_detected"]),
             "sleep_seconds": round(self._metrics["sleep_seconds"], 3),
-            "avg_sleep_s": round(self._metrics["sleep_seconds"] / total_requests, 3),
+            "rate_limit_sleep_s": round(self._metrics["rate_limit_sleep_seconds"], 3),
+            "delay_sleep_s": round(self._metrics["delay_sleep_seconds"], 3),
+            "avg_sleep_s": round(self._metrics["sleep_seconds"] / divisor, 3),
+            "avg_rate_limit_sleep_s": round(self._metrics["rate_limit_sleep_seconds"] / divisor, 3),
+            "avg_delay_sleep_s": round(self._metrics["delay_sleep_seconds"] / divisor, 3),
             "playwright_requests": int(self._metrics["playwright_requests"]),
+            "runtime_s": round(runtime, 3),
+            "effective_rps": round(requests / runtime, 3) if runtime > 0 and requests > 0 else 0.0,
+            "configured_per_host_rps": self._configured_rps,
+            "configured_delay_range": list(self._configured_delay_range),
+            "proxy_enabled": self._proxy_enabled,
+            "degraded_mode": self._degraded,
         }
 
 
@@ -658,7 +846,7 @@ def _load_input_frame(input_path: Path, columns: Iterable[str], batch_size: int)
 
 def run(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     t0 = time.time()
-    logger: Optional[logging.Logger] = ctx.get("logger")
+    logger = ctx.get("logger") or LOGGER
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
     io.ensure_dir(outdir)
 
@@ -689,27 +877,46 @@ def run(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     if not input_path.exists():
         return {"status": "FAIL", "error": f"missing input parquet: {input_path}"}
 
-    delay_range = tuple(cfg.get("delay_range", DEFAULT_DELAY_RANGE))
-    timeout = float(cfg.get("timeout", DEFAULT_TIMEOUT))
-    batch_size = int(cfg.get("batch_size", DEFAULT_BATCH_SIZE))
-    per_host_rps = float(cfg.get("per_host_rps", 1.0))
-    max_retries = int(cfg.get("max_retries", DEFAULT_MAX_RETRIES))
-    proxies = {
-        "http": os.getenv("HTTP_PROXY") or cfg.get("http_proxy"),
-        "https": os.getenv("HTTPS_PROXY") or cfg.get("https_proxy"),
-    }
+    step_cfg = _extract_maps_config(cfg)
+    delay_range = _resolve_delay_range(cfg, step_cfg, DEFAULT_DELAY_RANGE)
+    timeout = float(_first_not_none(step_cfg.get("timeout"), cfg.get("maps_timeout"), cfg.get("timeout"), DEFAULT_TIMEOUT))
+    batch_size = int(_first_not_none(step_cfg.get("batch_size"), cfg.get("maps_batch_size"), cfg.get("batch_size"), DEFAULT_BATCH_SIZE))
+    per_host_rps = _resolve_per_host_rps(cfg, step_cfg, default=1.0)
+    max_retries = int(_first_not_none(step_cfg.get("max_retries"), cfg.get("maps_max_retries"), cfg.get("max_retries"), DEFAULT_MAX_RETRIES))
+    proxies = _resolve_proxy_settings(cfg, step_cfg)
+    use_playwright = bool(_first_not_none(step_cfg.get("use_playwright"), cfg.get("use_playwright"), False))
+    playwright_timeout = float(_first_not_none(step_cfg.get("playwright_timeout"), cfg.get("playwright_timeout"), DEFAULT_PLAYWRIGHT_TIMEOUT))
+    user_agents_path = _first_non_empty(step_cfg.get("user_agents_path"), cfg.get("user_agents_path"))
+    disable_env_flag = _coerce_optional_bool(os.getenv("MAPS_DISABLE_PROXY"))
+    proxy_cfg = step_cfg.get("proxy") or step_cfg.get("proxies")
+    proxy_enabled_flag = _coerce_optional_bool(proxy_cfg.get("enabled")) if isinstance(proxy_cfg, dict) else None
+    if proxy_enabled_flag is True and not proxies and disable_env_flag is not True:
+        logger.warning(
+            "scraper.maps proxy enabled but no proxy URL resolved; set HTTP_PROXY/HTTPS_PROXY or scraper.maps.proxy.http/https."
+        )
+    proxy_state = "enabled" if proxies else "disabled"
+    if disable_env_flag is True:
+        proxy_state = "env-disabled"
+    elif proxy_enabled_flag is False:
+        proxy_state = "config-disabled"
+    logger.info(
+        "scraper.maps configuration -> per_host_rps=%.3f delay_range=%s proxy=%s",
+        per_host_rps,
+        list(delay_range),
+        proxy_state,
+    )
 
     scraper = MapsScraper(
         delay_range=delay_range,
         timeout=timeout,
         proxies=proxies,
-        user_agents_path=cfg.get("user_agents_path"),
+        user_agents_path=user_agents_path,
         max_retries=max_retries,
         logger=logger,
         html_dir=html_dir,
         per_host_rps=per_host_rps,
-        use_playwright=bool(cfg.get("use_playwright", False)),
-        playwright_timeout=float(cfg.get("playwright_timeout", DEFAULT_PLAYWRIGHT_TIMEOUT)),
+        use_playwright=use_playwright,
+        playwright_timeout=playwright_timeout,
         metrics_path=metrics_path,
         html_index_path=html_index_path,
     )
