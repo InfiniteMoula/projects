@@ -14,7 +14,11 @@ from bs4 import BeautifulSoup
 from utils import io
 from utils.url import registered_domain
 
-EMAIL_REGEX = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+EMAIL_REGEX = re.compile(
+    r"(?<![A-Z0-9._%+-])(?:mailto:)?([A-Z0-9][A-Z0-9._%+-]{0,63}@[A-Z0-9.-]+\.[A-Z]{2,63})",
+    re.IGNORECASE,
+)
+BANNED_EMAIL_TLDS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "js", "css"}
 OBFUSCATION_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"\s*\[\s*at\s*\]\s*", "@"),
     (r"\s*\(\s*at\s*\)\s*", "@"),
@@ -95,7 +99,8 @@ def _deobfuscate(text: str) -> str:
     result = text
     for pattern, repl in OBFUSCATION_PATTERNS:
         result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
-    result = re.sub(r'([A-Za-z\u00C0-\u017F]+)\s+([A-Za-z\u00C0-\u017F]+)(?=@)', r'\1.\2', result)
+    result = re.sub(r'([A-Za-z\u00C0-\u017F]{2,})\s+([A-Za-z\u00C0-\u017F]{2,})(?=@)', r'\1.\2', result)
+    result = result.replace("[at]", "@").replace("(at)", "@")
     return result
 
 
@@ -112,9 +117,89 @@ def _sanitize_email(email: str) -> str:
     return email.lower()
 
 
+def _is_probable_email(email: str) -> bool:
+    if not email or "@" not in email:
+        return False
+    local, domain = email.split("@", 1)
+    if not local or not domain or "." not in domain:
+        return False
+    tld = domain.rsplit(".", 1)[-1].lower()
+    if tld in BANNED_EMAIL_TLDS:
+        return False
+    if any(ext in domain for ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")):
+        return False
+    if len(local) > 64 or len(domain) > 255:
+        return False
+    return True
+
+
 def _extract_emails(text: str) -> Set[str]:
-    cleaned = _deobfuscate(text)
-    return {_sanitize_email(match) for match in EMAIL_REGEX.findall(cleaned)}
+    cleaned = _deobfuscate(text or "")
+    emails: Set[str] = set()
+    for match in EMAIL_REGEX.findall(cleaned):
+        email = _sanitize_email(match)
+        if _is_probable_email(email):
+            emails.add(email)
+    return emails
+
+
+def _extract_emails_from_html(html: str) -> Set[str]:
+    if not html:
+        return set()
+    emails: Set[str] = set()
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return emails
+    for link in soup.find_all("a"):
+        href = str(link.get("href") or "")
+        if href.lower().startswith("mailto:"):
+            payload = href.split(":", 1)[1]
+            payload = payload.split("?")[0]
+            for part in payload.split(","):
+                email = _sanitize_email(part)
+                if _is_probable_email(email):
+                    emails.add(email)
+        text = link.get_text(" ", strip=True)
+        if text:
+            emails.update(_extract_emails(text))
+    return emails
+
+
+def _normalize_siren(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 14:
+        return digits[:9]
+    if len(digits) == 9:
+        return digits
+    return None
+
+
+def _extract_sirens_from_row(row: pd.Series) -> Set[str]:
+    sirens: Set[str] = set()
+    candidates = [
+        row.get("siren"),
+        row.get("siren_extracted"),
+        row.get("siren_hash"),
+    ]
+    list_candidates = row.get("siren_list") or row.get("sirens")
+    if isinstance(list_candidates, (list, tuple, set)):
+        candidates.extend(list_candidates)
+    elif isinstance(list_candidates, str):
+        for part in re.split(r"[,;|\s]+", list_candidates):
+            candidates.append(part)
+    for candidate in candidates:
+        normalized = _normalize_siren(candidate)
+        if normalized:
+            sirens.add(normalized)
+    return sirens
 
 
 def _classify_email(email: str, generic_prefixes: Set[str]) -> str:
@@ -134,8 +219,8 @@ def _classify_email(email: str, generic_prefixes: Set[str]) -> str:
     return "nominative"
 
 
-def _extract_phones(text: str) -> Set[str]:
-    raw = _deobfuscate(text)
+def _extract_phones(text: str, html: str = "") -> Set[str]:
+    raw = _deobfuscate(text or "")
     phones: Set[str] = set()
     for region in REGION_CODES:
         matcher = phonenumbers.PhoneNumberMatcher(raw, region)
@@ -144,6 +229,27 @@ def _extract_phones(text: str) -> Set[str]:
             if phonenumbers.is_valid_number(number):
                 formatted = phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.E164)
                 phones.add(formatted)
+    if html:
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            soup = None
+        if soup:
+            for tag in soup.find_all(href=True):
+                href = tag["href"]
+                if isinstance(href, str) and href.lower().startswith("tel:"):
+                    candidate = href.split(":", 1)[1]
+                    candidate = candidate.split("?")[0]
+                    candidate = re.sub(r"[^\d+]", "", candidate)
+                    if not candidate:
+                        continue
+                    try:
+                        parsed = phonenumbers.parse(candidate, "FR")
+                    except phonenumbers.NumberParseException:
+                        continue
+                    if phonenumbers.is_valid_number(parsed):
+                        formatted = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+                        phones.add(formatted)
     return phones
 
 
@@ -216,13 +322,27 @@ def run(cfg: dict, ctx: dict) -> dict:
     logger = ctx.get("logger")
     outdir = Path(ctx["outdir"])
     pages_path = outdir / "crawl" / "pages.parquet"
+    dynamic_path = outdir / "headless" / "pages_dynamic.parquet"
     serp_path = outdir / "serp" / "serp_results.parquet"
     if not pages_path.exists() or not serp_path.exists():
         if logger:
             logger.warning("parse_contacts: missing crawl or serp outputs")
         return {"status": "SKIPPED", "reason": "MISSING_INPUTS"}
 
+    pages_frames: List[pd.DataFrame] = []
     pages_df = pd.read_parquet(pages_path)
+    if not pages_df.empty:
+        pages_frames.append(pages_df)
+    if dynamic_path.exists():
+        dynamic_df = pd.read_parquet(dynamic_path)
+        if not dynamic_df.empty:
+            pages_frames.append(dynamic_df)
+    if not pages_frames:
+        return {"status": "SKIPPED", "reason": "EMPTY_PAGES"}
+    pages_df = pd.concat(pages_frames, ignore_index=True)
+    subset_cols = [col for col in ("url", "content_text", "content_html_trunc") if col in pages_df.columns]
+    if subset_cols:
+        pages_df = pages_df.drop_duplicates(subset=subset_cols, keep="first")
     if pages_df.empty:
         return {"status": "SKIPPED", "reason": "EMPTY_PAGES"}
 
@@ -233,54 +353,98 @@ def run(cfg: dict, ctx: dict) -> dict:
     generic_prefixes = {prefix.rstrip("@").lower() for prefix in generic_list}
     generic_prefixes.update(GENERIC_PREFIXES)
 
-    domain_data: Dict[str, List[PageExtraction]] = defaultdict(list)
+    pages_by_key: Dict[str, List[PageExtraction]] = defaultdict(list)
 
     for _, row in pages_df.iterrows():
         domain = str(row.get("domain") or "").strip().lower()
+        url = str(row.get("url") or row.get("requested_url") or "").strip()
+        if not domain and url:
+            domain = registered_domain(url)
         if not domain:
             continue
-        url = str(row.get("url") or row.get("requested_url") or "").strip()
-        text = str(row.get("content_text") or "")
-        html = str(row.get("content_html_trunc") or "")
-        status = int(row.get("status") or 0)
+        text_candidates = (
+            row.get("content_text"),
+            row.get("text_content"),
+            row.get("text"),
+        )
+        text = next((val for val in text_candidates if isinstance(val, str) and val), "")
+        html_candidates = (
+            row.get("content_html_trunc"),
+            row.get("content_html"),
+            row.get("html"),
+        )
+        html = next((val for val in html_candidates if isinstance(val, str) and val), "")
+        status_value = row.get("status")
+        try:
+            status = int(status_value) if status_value is not None and not pd.isna(status_value) else 0
+        except (TypeError, ValueError):
+            status = 0
         priority = _page_priority(url)
         if prefer_mentions and "mention" in url.lower():
             priority = -1
         extraction = PageExtraction(url=url, status=status, priority=priority)
         extraction.discovered_at = row.get("discovered_at") or None
 
-        if text:
-            emails = _extract_emails(text)
-            for email in emails:
-                extraction.emails.add(email)
-                extraction.email_types[email] = _classify_email(email, generic_prefixes)
-            extraction.phones = _extract_phones(text)
-            social = _extract_social(text)
-            for network, urls in social.items():
-                extraction.social[network].update(urls)
-            sirets, sirens = _extract_sirets(text)
-            extraction.sirets = sirets
-            extraction.sirens = sirens
-            extraction.rcs_entries = _extract_rcs(text)
-            extraction.legal_managers = _extract_managers(text)
-            extraction.addresses = _extract_addresses(text, html)
-        domain_data[domain].append(extraction)
+        if not text and html:
+            try:
+                text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+            except Exception:
+                text = ""
 
-    if not domain_data:
+        emails = set()
+        if text:
+            emails.update(_extract_emails(text))
+        if html:
+            emails.update(_extract_emails_from_html(html))
+        for email in emails:
+            extraction.emails.add(email)
+            extraction.email_types[email] = _classify_email(email, generic_prefixes)
+
+        extraction.phones = _extract_phones(text, html)
+        combined_for_social = " ".join(filter(None, [text, html]))
+        social = _extract_social(combined_for_social)
+        for network, urls in social.items():
+            extraction.social[network].update(urls)
+        sirets, sirens_from_text = _extract_sirets(text or "")
+        extraction.sirets = sirets
+        sirens_from_row = _extract_sirens_from_row(row)
+        extraction.sirens = set(sirens_from_text) | sirens_from_row
+        extraction.rcs_entries = _extract_rcs(text or "")
+        extraction.legal_managers = _extract_managers(text or "")
+        extraction.addresses = _extract_addresses(text or "", html)
+
+        keys = set(extraction.sirens) | sirens_from_row
+        keys.add(domain)
+        for key in keys:
+            if key:
+                pages_by_key[key].append(extraction)
+
+    if not pages_by_key:
         return {"status": "SKIPPED", "reason": "NO_CONTACTS"}
 
-    aggregated_by_domain: Dict[str, Dict[str, object]] = {}
+    aggregated_by_key: Dict[str, Dict[str, object]] = {}
 
-    for domain, pages in domain_data.items():
+    for key, pages in pages_by_key.items():
         pages.sort(key=lambda p: (p.priority, 0 if p.status < 400 else 1, p.url))
-        email_sources: Dict[str, Tuple[int, str, str]] = {}
+        email_sources: Dict[str, Tuple[int, int, int, str, str]] = {}
+        domains = []
         for page in pages:
+            page_domain = registered_domain(page.url) if page.url else ""
+            if page_domain:
+                domains.append(page_domain)
             for email in page.emails:
-                meta = (page.priority, page.url, page.email_types.get(email, "generic"))
+                email_type = page.email_types.get(email, "generic")
+                meta = (
+                    page.priority,
+                    0 if page.status < 400 else 1,
+                    0 if email_type == "nominative" else 1,
+                    page.url,
+                    email_type,
+                )
                 existing = email_sources.get(email)
                 if existing is None or meta < existing:
                     email_sources[email] = meta
-        aggregated_by_domain[domain] = {
+        aggregated_by_key[key] = {
             "emails": sorted(email_sources.keys()),
             "email_source_meta": email_sources,
             "phones": sorted({phone for page in pages for phone in page.phones}),
@@ -293,9 +457,10 @@ def run(cfg: dict, ctx: dict) -> dict:
             "rcs": sorted({rcs for page in pages for rcs in page.rcs_entries}),
             "legal_managers": sorted({m for page in pages for m in page.legal_managers}),
             "addresses": sorted({addr for page in pages for addr in page.addresses}),
-            "best_page": pages[0].url,
-            "best_status": pages[0].status,
-            "best_discovered_at": pages[0].discovered_at,
+            "best_page": pages[0].url if pages else None,
+            "best_status": pages[0].status if pages else None,
+            "best_discovered_at": pages[0].discovered_at if pages else None,
+            "primary_domain": domains[0] if domains else None,
         }
 
     output_rows: List[Dict[str, object]] = []
@@ -305,23 +470,33 @@ def run(cfg: dict, ctx: dict) -> dict:
         domain = str(row.get("top_domain") or "").strip().lower()
         if not domain and top_url:
             domain = registered_domain(top_url)
-        if not domain:
-            continue
-        aggregate = aggregated_by_domain.get(domain, {})
+        siren = _normalize_siren(row.get("siren"))
+
+        aggregate = None
+        if siren:
+            aggregate = aggregated_by_key.get(siren)
+        if aggregate is None and domain:
+            aggregate = aggregated_by_key.get(domain)
+        if aggregate is None and siren:
+            aggregate = aggregated_by_key.get(str(siren))
+        if aggregate is None:
+            aggregate = {}
+
+        resolved_domain = domain or aggregate.get("primary_domain") or domain
         email_meta = aggregate.get("email_source_meta") or {}
         best_email = None
         best_email_type = None
         if email_meta:
             sorted_emails = sorted(
                 email_meta.items(),
-                key=lambda kv: (kv[1][0], 0 if kv[1][2] == "nominative" else 1, kv[0]),
+                key=lambda kv: (kv[1][0], kv[1][1], kv[1][2], kv[0]),
             )
             best_email, meta = sorted_emails[0]
-            best_email_type = meta[2]
+            best_email_type = meta[4]
         record = {
             "siren": row.get("siren"),
             "denomination": row.get("denomination"),
-            "domain": domain,
+            "domain": resolved_domain,
             "top_url": top_url,
             "best_page": aggregate.get("best_page"),
             "best_status": aggregate.get("best_status"),
