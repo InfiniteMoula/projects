@@ -164,7 +164,7 @@ def run(cfg: dict, ctx: dict) -> dict:
 
     crawl_cfg = (cfg.get("crawl") or {})
     max_pages = int(ctx.get("max_pages_per_domain") or crawl_cfg.get("max_pages_per_domain") or 12)
-    per_host_rps = float(crawl_cfg.get("per_host_rps") or 1.0)
+    per_host_rps = float(ctx.get("per_host_rps") or crawl_cfg.get("per_host_rps") or 1.0)
     respect_robots = bool(ctx.get("respect_robots", True)) if ctx.get("respect_robots") is not None else bool(crawl_cfg.get("respect_robots", True))
     time_budget = TimeBudget(ctx.get("crawl_time_budget_min") or crawl_cfg.get("time_budget_min"))
     timeout = float(crawl_cfg.get("timeout_sec") or DEFAULT_TIMEOUT)

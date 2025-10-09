@@ -28,13 +28,17 @@ STEP_REGISTRY = {
     "http.sitemap": "nethttp.collect_sitemap:run",
     "http.serp": "nethttp.collect_serp:run",
     "crawl.site": "nethttp.crawl_site:run",
+    "crawl.site_async": "nethttp.crawl_site_async:run",
     "headless.collect": "headless.collect_headless:run",
+    "headless.collect_fallback": "headless.collect_headless_fallback:run",
     "feeds.collect": "feeds.collect_rss:run",
     "pdf.collect": "pdf.collect_pdf:run",
     "parse.html": "parse.parse_html:run",
     "parse.jsonld": "parse.parse_jsonld:run",
     "parse.pdf": "parse.parse_pdf:run",
     "parse.contacts": "parse.parse_contacts:run",
+    "parse.contacts.initial": "parse.parse_contacts:run",
+    "parse.contacts.final": "parse.parse_contacts:run",
     "normalize.standardize": "normalize.standardize:run",
     "enrich.domain": "enrich.domain_discovery:run",
     "enrich.site": "enrich.site_probe:run",
@@ -48,19 +52,27 @@ STEP_REGISTRY = {
     "quality.dedupe": "quality.dedupe:run",
     "quality.score": "quality.score:run",
     "quality.enrich_score": "quality.enrich_score:run",
+    "quality.clean_contacts": "quality.clean_contacts:run",
+    "quality.clean_contacts.initial": "quality.clean_contacts:run",
+    "quality.clean_contacts.final": "quality.clean_contacts:run",
+    "monitor.scraper": "monitor.monitor_scraper:run",
     "package.export": "package.exporter:run",
 }
 
 STEP_DEPENDENCIES = {
     "headless.collect": {"dumps.collect"},
+    "headless.collect_fallback": {"quality.clean_contacts.initial"},
     "feeds.collect": {"dumps.collect"},
     "pdf.collect": {"dumps.collect"},
     "parse.html": {"headless.collect"},
     "parse.jsonld": {"feeds.collect"},
     "parse.pdf": {"pdf.collect"},
     "parse.contacts": {"crawl.site"},
+    "parse.contacts.initial": {"crawl.site_async"},
+    "parse.contacts.final": {"headless.collect_fallback"},
     "http.serp": {"enrich.address", "normalize.standardize"},
     "crawl.site": {"http.serp"},
+    "crawl.site_async": {"http.serp"},
     "normalize.standardize": {
         "dumps.collect",
         "api.collect",
@@ -80,6 +92,10 @@ STEP_DEPENDENCIES = {
     "quality.dedupe": {"enrich.email", "normalize.standardize"},
     "quality.score": {"normalize.standardize"},
     "quality.enrich_score": {"parse.contacts", "quality.checks"},
+    "quality.clean_contacts": {"parse.contacts"},
+    "quality.clean_contacts.initial": {"parse.contacts.initial"},
+    "quality.clean_contacts.final": {"parse.contacts.final"},
+    "monitor.scraper": {"quality.clean_contacts.final"},
     "package.export": {"quality.score"},
 }
 
@@ -107,6 +123,17 @@ PROFILES = {
         "enrich.phone",
         "quality.checks",
         "quality.score",
+        "package.export",
+    ],
+    "hybrid": [
+        "http.serp",
+        "crawl.site_async",
+        "parse.contacts.initial",
+        "quality.clean_contacts.initial",
+        "headless.collect_fallback",
+        "parse.contacts.final",
+        "quality.clean_contacts.final",
+        "monitor.scraper",
         "package.export",
     ],
     "deep": [
@@ -149,6 +176,39 @@ PROFILES = {
 }
 
 
+STEP_OUTPUT_HINTS = {
+    "http.serp": ["serp/serp_results.parquet"],
+    "crawl.site": ["crawl/pages.parquet"],
+    "crawl.site_async": ["crawl/pages.parquet"],
+    "parse.contacts": ["contacts/contacts.parquet"],
+    "parse.contacts.initial": ["contacts/contacts.parquet"],
+    "parse.contacts.final": ["contacts/contacts.parquet"],
+    "quality.clean_contacts": ["contacts/contacts_clean.parquet", "contacts/no_contact.csv"],
+    "quality.clean_contacts.initial": ["contacts/contacts_clean.parquet", "contacts/no_contact.csv"],
+    "quality.clean_contacts.final": ["contacts/contacts_clean.parquet"],
+    "headless.collect_fallback": ["headless/pages_dynamic.parquet"],
+    "monitor.scraper": ["metrics/summary.json", "metrics/scraper_stats.csv"],
+}
+
+
+def _resolve_step_outputs(step_name: str, context: dict) -> List[Path]:
+    hints = STEP_OUTPUT_HINTS.get(step_name, [])
+    if not hints:
+        return []
+    base = Path(context.get("outdir") or ".")
+    return [base / hint for hint in hints]
+
+
+def _register_resume_outputs(ctx: dict, status: dict) -> None:
+    outputs = status.get("outputs")
+    if not outputs:
+        return
+    fresh = ctx.setdefault("_fresh_outputs", set())
+    for output in outputs:
+        if output:
+            fresh.add(str(output))
+
+
 def load_job(job_path: os.PathLike[str] | str) -> dict:
     job_file = Path(job_path).expanduser().resolve()
     try:
@@ -189,6 +249,30 @@ def _run_step(step_name, cfg, context):
     budget_tracker = context.get("budget_tracker")
     verbose = context.get("verbose", False)
     debug = context.get("debug", False)
+    outputs = _resolve_step_outputs(step_name, context)
+    fresh_outputs = context.setdefault("_fresh_outputs", set())
+    log_lock = context.get("log_lock")
+
+    if context.get("resume"):
+        if outputs and all(path.exists() for path in outputs):
+            if not any(str(path) in fresh_outputs for path in outputs):
+                status = {
+                    "step": step_name,
+                    "status": "SKIPPED",
+                    "reason": "resume",
+                    "duration_s": 0,
+                    "outputs": [str(p) for p in outputs],
+                }
+                pipeline.log_step_event(
+                    logger,
+                    step_name,
+                    "resume_skip",
+                    status="SKIPPED",
+                    reason="resume",
+                )
+                with (log_lock if log_lock else nullcontext()):
+                    io.log_json(context["logs"], status)
+                return status
     
     # Debug info: Step configuration and context
     if debug:
@@ -214,7 +298,6 @@ def _run_step(step_name, cfg, context):
                 "duration_s": 0,
             }
             pipeline.log_step_event(logger, step_name, "budget_exceeded", status="BUDGET_EXCEEDED", error=str(exc))
-            log_lock = context.get("log_lock")
             with (log_lock if log_lock else nullcontext()):
                 io.log_json(context["logs"], status)
             raise RuntimeError(f"step {step_name} budget exceeded: {exc}")
@@ -265,6 +348,8 @@ def _run_step(step_name, cfg, context):
             "out": out,
             "duration_s": round(time.time() - started, 3),
         }
+        if outputs:
+            status["outputs"] = [str(p) for p in outputs]
         
         # Add budget stats to status
         if budget_tracker:
@@ -306,9 +391,11 @@ def _run_step(step_name, cfg, context):
         duration=status["duration_s"],
         **extra,
     )
-    log_lock = context.get("log_lock")
     with (log_lock if log_lock else nullcontext()):
         io.log_json(context["logs"], status)
+    if status["status"] == "OK" and outputs:
+        for path in outputs:
+            fresh_outputs.add(str(path))
     if verbose:
         logger.debug(f"[VERBOSE] Complete step result for {step_name}: {json.dumps(status, ensure_ascii=False)}")
     elif debug and status.get("error"):
@@ -336,8 +423,8 @@ def build_context(args, job):
         "run_id": run_id,
         "outdir": str(outdir_path),
         "outdir_path": outdir_path,
-        "logs": str((logs_dir / f"{run_id}.jsonl")),
-        "logs_path": logs_dir / f"{run_id}.jsonl",
+        "logs": str((logs_dir / f"{run_id}.json")),
+        "logs_path": logs_dir / f"{run_id}.json",
         "dry_run": args.dry_run,
         "sample": args.sample,
         "lang": job.get("output", {}).get("lang", "fr"),
@@ -357,6 +444,7 @@ def build_context(args, job):
         "parallel": getattr(args, 'parallel', False),
         "parallel_mode": getattr(args, 'parallel_mode', 'thread'),
         "log_lock": threading.Lock(),
+        "_fresh_outputs": set(),
     }
     ctx["serp_timeout_sec"] = float(getattr(args, "serp_timeout_sec", 8.0))
     ctx["max_pages_per_domain"] = int(getattr(args, "max_pages_per_domain", 12))
@@ -366,6 +454,12 @@ def build_context(args, job):
     ua_path = getattr(args, "user_agent_pool", None)
     ctx["user_agent_pool_path"] = str(ua_path) if ua_path else None
     ctx["user_agent_pool"] = load_user_agent_pool(str(ua_path) if ua_path else None)
+    concurrency = int(getattr(args, "concurrency", 0) or 0)
+    if concurrency > 0:
+        ctx["max_domains_parallel"] = concurrency
+    per_domain_rps = float(getattr(args, "per_domain_rps", 0.0) or 0.0)
+    if per_domain_rps > 0:
+        ctx["per_host_rps"] = per_domain_rps
     
     # Initialize budget tracker if budgets are configured
     budget_tracker = budget_middleware.create_budget_tracker(job)
@@ -714,6 +808,7 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                     for future in as_completed(future_map):
                         name = future_map[future]
                         result = future.result()
+                        _register_resume_outputs(ctx, result)
                         results_map[name] = result
                         if ctx.get('debug'):
                             logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
@@ -734,6 +829,7 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                     for future in as_completed(future_map):
                         name = future_map[future]
                         result = future.result()
+                        _register_resume_outputs(ctx, result)
                         results_map[name] = result
                         if ctx.get('debug'):
                             logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
@@ -747,6 +843,7 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
         else:
             for name in batch:
                 result = _run_step(name, job, ctx)
+                _register_resume_outputs(ctx, result)
                 results.append(result)
                 if ctx.get('debug'):
                     logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
@@ -957,6 +1054,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     common.add_argument('--run-id')
     common.add_argument('--dry-run', action='store_true')
     common.add_argument('--sample', type=int, default=0)
+    common.add_argument('--concurrency', type=int, default=0,
+                        help='Maximum concurrent domains for crawling (overrides job config)')
+    common.add_argument('--per-domain-rps', type=float, default=0.0,
+                        help='Override crawl rate limit (requests per second per domain)')
     common.add_argument('--time-budget-min', type=int, default=0)
     common.add_argument('--workers', type=int, default=8)
     common.add_argument('--json', action='store_true')
