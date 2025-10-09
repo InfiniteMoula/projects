@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import ast
+import json
 import math
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
+from pandas.api.types import is_list_like
 
 from utils import io
 from utils.url import registered_domain
@@ -32,10 +34,6 @@ def _normalize_siren(value) -> Optional[str]:
 def _coerce_list(value) -> List[str]:
     if value is None:
         return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    if isinstance(value, (set, tuple)):
-        return [str(v).strip() for v in value if str(v).strip()]
     if isinstance(value, str):
         trimmed = value.strip()
         if not trimmed:
@@ -48,6 +46,8 @@ def _coerce_list(value) -> List[str]:
             if isinstance(parsed, (list, tuple, set)):
                 return [str(v).strip() for v in parsed if str(v).strip()]
         return [trimmed]
+    if is_list_like(value):
+        return [str(v).strip() for v in value if str(v).strip()]
     return []
 
 
@@ -102,6 +102,19 @@ def run(cfg: dict, ctx: dict) -> dict:
         return {"status": "SKIPPED", "reason": "NO_CONTACTS"}
 
     df = pd.read_parquet(contacts_path)
+    experimental_cfg = cfg.get("experimental") or {}
+    if experimental_cfg.get("ai_ocr"):
+        ai_path = outdir / "contacts" / "contacts_ai.parquet"
+        if ai_path.exists():
+            try:
+                ai_df = pd.read_parquet(ai_path)
+                if not ai_df.empty:
+                    ai_df = ai_df.copy()
+                    ai_df["source"] = "ai_ocr"
+                    df = pd.concat([df, ai_df], ignore_index=True, sort=False)
+            except Exception:
+                if logger:
+                    logger.warning("clean_contacts: failed to load AI contacts from %s", ai_path)
     if df.empty:
         no_contact_path = io.ensure_dir(outdir / "contacts") / "no_contact.csv"
         pd.DataFrame(columns=["siren", "domain", "denomination", "top_url"]).to_csv(no_contact_path, index=False)
@@ -264,6 +277,10 @@ def run(cfg: dict, ctx: dict) -> dict:
     contacts_dir = io.ensure_dir(outdir / "contacts")
     clean_parquet = contacts_dir / "contacts_clean.parquet"
     clean_csv = contacts_dir / "contacts_clean.csv"
+    if "social_links" in cleaned_df.columns:
+        cleaned_df["social_links"] = cleaned_df["social_links"].apply(
+            lambda val: json.dumps(val, ensure_ascii=False) if isinstance(val, dict) else val
+        )
     cleaned_df.to_parquet(clean_parquet, index=False)
     cleaned_df.to_csv(clean_csv, index=False)
 
@@ -290,4 +307,3 @@ def run(cfg: dict, ctx: dict) -> dict:
 
 if __name__ == "__main__":
     raise SystemExit("clean_contacts is intended to be invoked via builder run pipeline")
-
