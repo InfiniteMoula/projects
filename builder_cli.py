@@ -21,6 +21,11 @@ import create_job
 from utils import budget_middleware, config, io, pipeline
 from utils.ua import load_user_agent_pool
 
+try:
+    from monitoring import prometheus_exporter
+except ImportError:  # pragma: no cover - optional dependency
+    prometheus_exporter = None
+
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
     "api.collect": "api.collect_api:run",
@@ -403,7 +408,14 @@ def _run_step(step_name, cfg, context):
         logger.debug(f"[VERBOSE] Complete step result for {step_name}: {json.dumps(status, ensure_ascii=False)}")
     elif debug and status.get("error"):
         logger.info(f"[DEBUG] Step '{step_name}' result: {status['status']} in {status['duration_s']}s")
-    
+
+    prom_ctx = context.get("_prometheus")
+    if isinstance(prom_ctx, dict) and prometheus_exporter:
+        try:
+            prometheus_exporter.observe_step(step_name, status["status"], status["duration_s"])
+        except Exception:  # pragma: no cover - defensive logging
+            logger.debug("Prometheus export failed for step %s", step_name, exc_info=True)
+
     if status["status"] not in ("OK", "SKIPPED", "WARN"):
         raise RuntimeError(f"step {step_name} failed")
     return status
@@ -473,7 +485,22 @@ def build_context(args, job):
     kpi_calculator = budget_middleware.create_kpi_calculator(job)
     if kpi_calculator:
         ctx["kpi_calculator"] = kpi_calculator
-    
+
+    prom_port = int(getattr(args, "prometheus_port", 0) or 0)
+    prom_addr = getattr(args, "prometheus_address", "0.0.0.0")
+    ctx["_prometheus"] = None
+    if prom_port and prometheus_exporter:
+        started = prometheus_exporter.start_metrics_server(prom_port, prom_addr)
+        if started:
+            ctx["_prometheus"] = {
+                "run_id": run_id,
+                "job_name": Path(args.job).stem,
+                "port": prom_port,
+                "address": prom_addr,
+            }
+        else:
+            ctx["_prometheus"] = False
+
     return ctx
 
 
@@ -746,6 +773,20 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
 
     steps_sorted = topo_sorted(steps, logger)
     total_steps = len(steps_sorted)
+
+    prom_ctx = ctx.get("_prometheus")
+    if isinstance(prom_ctx, dict) and prometheus_exporter:
+        try:
+            profile_name = getattr(args, "profile", None) or job.get("profile")
+            prometheus_exporter.set_run_metadata(
+                run_id=prom_ctx["run_id"],
+                job_name=prom_ctx["job_name"],
+                profile=profile_name,
+                total_steps=total_steps,
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.debug("Prometheus run metadata export failed", exc_info=True)
+
     step_indices = {name: index for index, name in enumerate(steps_sorted, start=1)}
     step_positions = {name: f"{index}/{total_steps}" for name, index in step_indices.items()}
     batches = build_execution_batches(steps_sorted)
@@ -1069,6 +1110,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     common.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
     common.add_argument('--max-ram-mb', type=int, default=0)
     common.add_argument('--metrics-file', type=Path, help='Write pipeline metrics JSON to this file')
+    common.add_argument('--prometheus-port', type=int, default=0,
+                        help='Expose Prometheus metrics on this port (0 disables export)')
+    common.add_argument('--prometheus-address', default='0.0.0.0',
+                        help='Bind address for the Prometheus metrics server')
     common.add_argument('--parallel', action='store_true',
                         help='Enable parallel execution for independent steps')
     common.add_argument('--parallel-mode', choices=['thread', 'process'], default='thread',

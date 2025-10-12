@@ -14,6 +14,7 @@ dnspython==2.6.1
 pdfminer.six==20231228
 tldextract==5.1.2
 psutil==5.9.8
+prometheus-client>=0.16.0,<0.21.0
 jinja2==3.1.4
 weasyprint==66.0
 pydantic==2.8.2

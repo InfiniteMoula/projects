@@ -1,0 +1,54 @@
+services:
+  pipeline-worker:
+    build:
+      context: ..
+    command: >-
+      python builder_cli.py run-profile
+      --job /workspace/jobs/standard.yaml
+      --out /workspace/out
+      --profile standard
+      --prometheus-port 9099
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ../jobs:/workspace/jobs:ro
+      - ../out:/workspace/out
+    depends_on:
+      - prometheus
+    networks:
+      - pipeline-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - pipeline-net
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - pipeline-net
+
+volumes:
+  grafana-storage:
+
+networks:
+  pipeline-net:
+    driver: bridge
