@@ -272,15 +272,17 @@ def run(cfg: dict, ctx: dict) -> dict:
     """Run Google Maps search enrichment."""
     logger = ctx.get("logger")
     t0 = time.time()
+
+    outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
     
     # Input/output paths - first check for database.csv from address step
-    database_path = Path(ctx["outdir"]) / "database.csv"
-    input_path = Path(ctx["outdir"]) / "normalized.parquet"
+    database_path = outdir / "database.csv"
+    input_path = outdir / "normalized.parquet"
     
     if not database_path.exists():
         # Fallback to old behavior if database.csv doesn't exist
         if not input_path.exists():
-            input_path = Path(ctx["outdir"]) / "normalized.csv"
+            input_path = outdir / "normalized.csv"
             if not input_path.exists():
                 return {"status": "SKIPPED", "reason": "NO_DATABASE_OR_NORMALIZED_DATA"}
         database_df = None
@@ -292,12 +294,12 @@ def run(cfg: dict, ctx: dict) -> dict:
     
     # Also need the main dataset for final merge
     if not input_path.exists():
-        input_path = Path(ctx["outdir"]) / "normalized.csv"
+        input_path = outdir / "normalized.csv"
         if not input_path.exists():
             return {"status": "SKIPPED", "reason": "NO_NORMALIZED_DATA"}
 
     request_tracker = ctx.get("request_tracker")
-    output_path = Path(ctx["outdir"]) / "google_maps_enriched.parquet"
+    output_path = outdir / "google_maps_enriched.parquet"
     
     try:
         # Load main input data
