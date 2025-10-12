@@ -813,6 +813,9 @@ def run(cfg: dict, ctx: dict) -> dict:
         if csv_writer:
             csv_writer.close()
 
+        if isinstance(ctx, dict):
+            ctx["total_lines_processed"] = total
+
         elapsed = time.time() - t0
         duration = round(elapsed, 3)
         rows_per_s = total / elapsed if elapsed > 0 else 0.0

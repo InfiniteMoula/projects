@@ -604,8 +604,43 @@ class AddressSuccessClassifier:
         
         return dict(zip(feature_names, self.classifier.feature_importances_))
     
+    def load_models(self) -> bool:
+        """Load trained models from disk and return whether loading succeeded."""
+        self.model_dir.mkdir(parents=True, exist_ok=True)
+        model_file = self.model_dir / "address_classifier.pkl"
+
+        if not model_file.exists():
+            logger.info("No saved models found at %s", model_file)
+            return False
+
+        try:
+            models = copy.deepcopy(_load_pickled_models(str(model_file)))
+        except FileNotFoundError:
+            logger.info("No saved models found at %s", model_file)
+            return False
+        except (OSError, pickle.UnpicklingError) as exc:
+            logger.error("Failed to load models from %s: %s", model_file, exc)
+            return False
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected error while loading models from %s: %s", model_file, exc)
+            return False
+
+        LabelEncoderCls, StandardScalerCls = _get_preprocessing()
+        classifier = models.get("classifier")
+        if classifier is None:
+            logger.warning("Saved model file %s did not contain a classifier", model_file)
+            return False
+
+        self.classifier = classifier
+        self.scaler = models.get("scaler") or StandardScalerCls()
+        self.label_encoder = models.get("label_encoder") or LabelEncoderCls()
+        self.training_data = models.get("training_data", [])
+
+        logger.info("Models loaded from %s", model_file)
+        return True
+    
     def _save_models(self):
-        """Save trained models to disk."""
+        """Persist trained models to disk."""
         models_to_save = {
             'classifier': self.classifier,
             'scaler': self.scaler,
@@ -614,36 +649,16 @@ class AddressSuccessClassifier:
         }
         
         model_file = self.model_dir / "address_classifier.pkl"
+
+        self.model_dir.mkdir(parents=True, exist_ok=True)
         
         try:
             with open(model_file, 'wb') as f:
                 pickle.dump(models_to_save, f)
             _load_pickled_models.cache_clear()
             logger.info(f"Models saved to {model_file}")
-        except Exception as e:
-            logger.error(f"Failed to save models: {e}")
-    
-def load_models(self) -> bool:
-        """Load trained models from disk."""
-        model_file = self.model_dir / "address_classifier.pkl"
-
-        try:
-            models = copy.deepcopy(_load_pickled_models(str(model_file)))
-        except FileNotFoundError:
-            logger.info("No saved models found")
-            return False
-        except (OSError, pickle.UnpicklingError) as exc:
-            logger.error(f"Failed to load models: {exc}")
-            return False
-
-        LabelEncoderCls, StandardScalerCls = _get_preprocessing()
-        self.classifier = models.get('classifier')
-        self.scaler = models.get('scaler') or StandardScalerCls()
-        self.label_encoder = models.get('label_encoder') or LabelEncoderCls()
-        self.training_data = models.get('training_data', [])
-
-        logger.info(f"Models loaded from {model_file}")
-        return True
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to save models to %s: %s", model_file, exc)
 
 
 def create_address_classifier(model_dir: str = "models") -> AddressSuccessClassifier:

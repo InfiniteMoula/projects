@@ -14,11 +14,12 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 
-from utils import io
+from utils import budget_middleware, io
 from utils.http import HttpError, request_with_backoff
 from utils.rate import PerHostRateLimiter
 from utils.ua import UserAgentPool, load_user_agent_pool
 from utils.url import canonicalize, hostname, registered_domain
+from utils.state import SequentialRunState
 
 BING_URL = "https://www.bing.com/search"
 LEGAL_STOPWORDS = {
@@ -176,12 +177,25 @@ def _select_best(results: List[Dict[str, str]], row: CompanyQuery) -> Optional[S
     )
 
 
-def _iter_companies(df: pd.DataFrame) -> Iterable[CompanyQuery]:
-    for _, row in df.iterrows():
+def _company_key(idx: int, row: pd.Series, denomination: str) -> str:
+    siren = str(row.get("siren") or "").strip()
+    if siren:
+        return f"{siren}:{idx}"
+    city = str(row.get("ville") or row.get("commune") or "").strip()
+    postal_code = str(row.get("code_postal") or "").strip()
+    denom_token = re.sub(r"\s+", "_", denomination.lower()) if denomination else "unknown"
+    city_token = re.sub(r"\s+", "_", city.lower()) if city else "nocity"
+    postal_token = postal_code or "nopostal"
+    return f"{idx}:{denom_token}:{city_token}:{postal_token}"
+
+
+def _iter_companies(df: pd.DataFrame) -> Iterable[Tuple[str, CompanyQuery]]:
+    for idx, row in df.iterrows():
         denomination = str(row.get("denomination") or row.get("raison_sociale") or "").strip()
         if not denomination:
             continue
-        yield CompanyQuery(
+        key = _company_key(idx, row, denomination)
+        yield key, CompanyQuery(
             siren=str(row.get("siren") or "").strip() or None,
             denomination=denomination,
             city=(str(row.get("ville") or row.get("commune") or "").strip() or None),
@@ -218,78 +232,105 @@ def run(cfg: dict, ctx: dict) -> dict:
     if df.empty:
         return {"status": "SKIPPED", "reason": "EMPTY"}
 
+    companies: List[Tuple[str, CompanyQuery]] = list(_iter_companies(df))
+    if not companies:
+        return {"status": "SKIPPED", "reason": "NO_COMPANIES"}
+
+    serp_dir = io.ensure_dir(outdir / "serp")
+    state = SequentialRunState(serp_dir / "serp_state.json")
+    state.set_metadata(total=len(companies))
+
+    completed_map = state.metadata.get("completed_extra")
+    if not isinstance(completed_map, dict):
+        completed_map = {}
+
+    ordered_keys = [key for key, _ in companies]
+    pending_keys = set(state.pending(ordered_keys))
+
     ua_pool: UserAgentPool = ctx.get("user_agent_pool") or load_user_agent_pool(None)
     limiter = PerHostRateLimiter(per_host_rps=per_host_rps, jitter_range=(0.2, 0.8))
+    request_tracker = ctx.get("request_tracker")
 
-    out_rows: List[Dict[str, object]] = []
     queries_seen: Dict[str, List[Dict[str, str]]] = {}
     session_headers = dict(SERP_HEADERS)
     parsed_host = urlparse(BING_URL).hostname or "bing.com"
-    attempts = 0
+    attempts = int(state.metadata.get("attempts") or 0)
+
+    if not pending_keys and logger:
+        logger.info("collect_serp: all %d companies already processed", len(companies))
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        for company in _iter_companies(df):
-            queries = _build_queries(company)
+        for key, company in companies:
+            if key not in pending_keys:
+                continue
+
+            state.mark_started(key)
             picked_selection: Optional[SerpSelection] = None
             picked_results: List[Dict[str, str]] = []
             used_query = ""
-            for query in queries:
-                limiter.wait(parsed_host)
-                cached = queries_seen.get(query)
-                if cached is None:
-                    headers = dict(session_headers)
-                    headers["User-Agent"] = ua_pool.get()
-                    params = {
-                        "q": query,
-                        "count": max(5, max_results),
-                        "mkt": "fr-FR",
-                        "setLang": "fr",
-                    }
-                    try:
-                        response = request_with_backoff(
-                            client,
-                            "GET",
-                            BING_URL,
-                            headers=headers,
-                            params=params,
-                        )
-                    except HttpError as exc:
-                        if logger:
-                            logger.warning("collect_serp: query '%s' failed: %s", query, exc)
-                        queries_seen[query] = []
-                        continue
-                    if response.status_code >= 400:
-                        if logger:
-                            logger.debug(
-                                "collect_serp: status %s for query '%s'",
-                                response.status_code,
-                                query,
-                            )
-                        queries_seen[query] = []
-                        continue
-                    parsed_results = _parse_bing(response.text, max_results)
-                    queries_seen[query] = parsed_results
-                    attempts += 1
-                picked_results = queries_seen[query]
-                selection = _select_best(picked_results, company)
-                used_query = query
-                if selection:
-                    picked_selection = selection
-                    break
-            if not picked_selection and picked_results:
-                # fallback to first result even if confidence low
-                best_raw = picked_results[0]
-                picked_selection = SerpSelection(
-                    url=best_raw["url"],
-                    domain=best_raw["domain"],
-                    rank=int(best_raw["rank"]),
-                    confidence=float(_score_result(best_raw, _normalize_name(company.denomination), company.city)),
-                    title=best_raw.get("title") or "",
-                    snippet=best_raw.get("snippet") or "",
-                )
 
-            out_rows.append(
-                {
+            try:
+                for query in _build_queries(company):
+                    limiter.wait(parsed_host)
+                    cached = queries_seen.get(query)
+                    if cached is None:
+                        headers = dict(session_headers)
+                        headers["User-Agent"] = ua_pool.get()
+                        params = {
+                            "q": query,
+                            "count": max(5, max_results),
+                            "mkt": "fr-FR",
+                            "setLang": "fr",
+                        }
+                        try:
+                            response = request_with_backoff(
+                                client,
+                                "GET",
+                                BING_URL,
+                                headers=headers,
+                                params=params,
+                                request_tracker=request_tracker,
+                            )
+                        except budget_middleware.BudgetExceededError:
+                            state.mark_failed(key, "budget_exceeded")
+                            state.set_metadata(last_error=key, attempts=attempts)
+                            raise
+                        except HttpError as exc:
+                            if logger:
+                                logger.warning("collect_serp: query '%s' failed: %s", query, exc)
+                            queries_seen[query] = []
+                            continue
+                        if response.status_code >= 400:
+                            if logger:
+                                logger.debug(
+                                    "collect_serp: status %s for query '%s'",
+                                    response.status_code,
+                                    query,
+                                )
+                            queries_seen[query] = []
+                            continue
+                        parsed_results = _parse_bing(response.text, max_results)
+                        queries_seen[query] = parsed_results
+                        attempts += 1
+                    picked_results = queries_seen[query]
+                    selection = _select_best(picked_results, company)
+                    used_query = query
+                    if selection:
+                        picked_selection = selection
+                        break
+
+                if not picked_selection and picked_results:
+                    best_raw = picked_results[0]
+                    picked_selection = SerpSelection(
+                        url=best_raw["url"],
+                        domain=best_raw["domain"],
+                        rank=int(best_raw["rank"]),
+                        confidence=float(_score_result(best_raw, _normalize_name(company.denomination), company.city)),
+                        title=best_raw.get("title") or "",
+                        snippet=best_raw.get("snippet") or "",
+                    )
+
+                result_row = {
                     "siren": company.siren,
                     "denomination": company.denomination,
                     "ville": company.city,
@@ -303,10 +344,35 @@ def run(cfg: dict, ctx: dict) -> dict:
                     "snippet": picked_selection.snippet if picked_selection else "",
                     "results": picked_results,
                 }
-            )
+                state.mark_completed(key, extra=result_row)
+                completed_map[key] = result_row
+            except budget_middleware.BudgetExceededError:
+                raise
+            except Exception as exc:
+                if logger:
+                    logger.warning("collect_serp: failed for %s: %s", key, exc)
+                fallback_row = {
+                    "siren": company.siren,
+                    "denomination": company.denomination,
+                    "ville": company.city,
+                    "code_postal": company.postal_code,
+                    "query": used_query,
+                    "top_url": "",
+                    "top_domain": "",
+                    "rank": None,
+                    "confidence": 0.0,
+                    "title": "",
+                    "snippet": "",
+                    "results": [],
+                }
+                state.mark_completed(key, extra=fallback_row)
+                completed_map[key] = fallback_row
 
-    out_dir = io.ensure_dir(outdir / "serp")
-    output_path = out_dir / "serp_results.parquet"
+    out_rows: List[Dict[str, object]] = [
+        completed_map[key] for key in ordered_keys if isinstance(completed_map.get(key), dict)
+    ]
+
+    output_path = serp_dir / "serp_results.parquet"
     pd.DataFrame(out_rows).to_parquet(output_path, index=False)
 
     stats = {
@@ -314,6 +380,7 @@ def run(cfg: dict, ctx: dict) -> dict:
         "attempts": attempts,
         "input_rows": int(total_rows),
     }
+    state.set_metadata(attempts=attempts, last_output=str(output_path), records=len(out_rows))
     return {
         "status": "OK",
         "output": str(output_path),

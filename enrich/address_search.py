@@ -13,7 +13,7 @@ import re
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
@@ -21,6 +21,7 @@ import pyarrow as pa
 import httpx
 from bs4 import BeautifulSoup
 
+from utils import budget_middleware
 from utils.parquet import ParquetBatchWriter, iter_batches
 
 # Configuration
@@ -111,7 +112,11 @@ def _extract_business_info_from_html(html_content: str, search_engine: str) -> D
     
     return result
 
-def _search_address(address: str, session: httpx.Client) -> Dict[str, any]:
+def _search_address(
+    address: str,
+    session: httpx.Client,
+    request_tracker: Optional[Callable[[int], None]] = None,
+) -> Dict[str, any]:
     """Search for an address on Google.fr and Bing.com."""
     import random
     
@@ -135,6 +140,8 @@ def _search_address(address: str, session: httpx.Client) -> Dict[str, any]:
             time.sleep(delay)
             
             response = session.get(url, timeout=SEARCH_TIMEOUT)
+            if request_tracker:
+                request_tracker(len(response.content or b""))
             response.raise_for_status()
             
             # Extract information from HTML
@@ -145,7 +152,23 @@ def _search_address(address: str, session: httpx.Client) -> Dict[str, any]:
             result[f'{search_engine}_phones'] = info['phone_numbers'] 
             result[f'{search_engine}_emails'] = info['emails']
             
+        except budget_middleware.BudgetExceededError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            result['search_status'] = f'partial_error_{search_engine}'
+            print(f"HTTP error searching {search_engine} for '{address}': {exc}")
+        except httpx.HTTPError as exc:
+            if request_tracker:
+                response_obj = getattr(exc, "response", None)
+                size = len(response_obj.content or b"") if response_obj and response_obj.content else 0
+                request_tracker(size)
+            result['search_status'] = f'partial_error_{search_engine}'
+            print(f"HTTP error searching {search_engine} for '{address}': {exc}")
         except Exception as e:
+            if isinstance(e, budget_middleware.BudgetExceededError):
+                raise
+            if request_tracker:
+                request_tracker(0)
             print(f"Error searching {search_engine} for '{address}': {e}")
             result['search_status'] = f'partial_error_{search_engine}'
     

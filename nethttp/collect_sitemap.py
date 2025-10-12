@@ -75,6 +75,7 @@ def run(cfg, ctx):
                     break
 
             url = f"https://{domain}/sitemap.xml"
+            state.mark_started(domain)
             try:
                 response = request_with_backoff(
                     client,
@@ -85,6 +86,13 @@ def run(cfg, ctx):
                     backoff_max=backoff_max,
                     request_tracker=request_tracker,
                 )
+            except budget_middleware.BudgetExceededError:
+                state.set_metadata(
+                    request_count=request_count,
+                    total_bytes=total_bytes,
+                    last_error=domain,
+                )
+                raise
             except HttpError as exc:
                 if logger:
                     logger.warning("Failed to fetch sitemap %s after retries: %s", url, exc)
@@ -97,17 +105,6 @@ def run(cfg, ctx):
                 continue
 
             content_length = len(response.content or b"")
-
-            try:
-                if request_tracker:
-                    request_tracker(content_length)
-            except budget_middleware.BudgetExceededError:
-                state.set_metadata(
-                    request_count=request_count,
-                    total_bytes=total_bytes,
-                    last_error=domain,
-                )
-                raise
 
             request_count += 1
 

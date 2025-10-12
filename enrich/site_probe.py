@@ -3,12 +3,14 @@
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import pandas as pd
 import pyarrow as pa
 import requests
 
+from utils import budget_middleware
+from utils.state import SequentialRunState
 from utils.parquet import ParquetBatchWriter, iter_batches
 
 REQ_TIMEOUT = 4.0
@@ -17,7 +19,12 @@ DEFAULT_CACHE_TTL = 900
 DEFAULT_RETRIES = 2
 
 
-def _probe(url: str, *, timeout: float) -> tuple[bool, str]:
+def _probe(
+    url: str,
+    *,
+    timeout: float,
+    request_tracker: Optional[Callable[[int], None]] = None,
+) -> tuple[bool, str]:
     if not isinstance(url, str) or not url.strip():
         return False, ""
     u = url.strip()
@@ -30,16 +37,35 @@ def _probe(url: str, *, timeout: float) -> tuple[bool, str]:
             timeout=timeout,
             headers={"User-Agent": UA},
         )
+        if request_tracker:
+            try:
+                content_length = int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                content_length = 0
+            request_tracker(content_length)
         ok = 200 <= response.status_code < 400
         return ok, response.url if ok else ""
+    except budget_middleware.BudgetExceededError:
+        raise
     except Exception:
+        if request_tracker:
+            try:
+                request_tracker(0)
+            except budget_middleware.BudgetExceededError:
+                raise
         return False, ""
 
 
-def _probe_with_retry(url: str, *, timeout: float, retries: int) -> tuple[bool, str]:
+def _probe_with_retry(
+    url: str,
+    *,
+    timeout: float,
+    retries: int,
+    request_tracker: Optional[Callable[[int], None]] = None,
+) -> tuple[bool, str]:
     last: tuple[bool, str] = (False, "")
     for _ in range(max(retries, 1)):
-        last = _probe(url, timeout=timeout)
+        last = _probe(url, timeout=timeout, request_tracker=request_tracker)
         if last[0]:
             break
     return last
@@ -66,6 +92,7 @@ def run(cfg: dict, ctx: dict) -> dict:
     dry_run = bool(ctx.get("dry_run", False))
     logger = ctx.get("logger")
     using_maps_data = inp == maps_inp
+    request_tracker = ctx.get("request_tracker")
 
     if logger:
         logger.info(f"Site probe using {'Google Maps' if using_maps_data else 'domain'} data")
@@ -80,9 +107,16 @@ def run(cfg: dict, ctx: dict) -> dict:
         result = cache.get(key)
         if result and result[0] > now:
             return result[1]
-        value = _probe_with_retry(raw_url, timeout=timeout, retries=retries)
+        value = _probe_with_retry(raw_url, timeout=timeout, retries=retries, request_tracker=request_tracker)
         cache[key] = (now + ttl, value)
         return value
+
+    state = SequentialRunState(outdir / "site_probe_state.json")
+    seen_urls = set(state.completed)
+    seen_urls.update(state.failed.keys())
+    total_known = int(state.metadata.get("total") or len(seen_urls))
+    if not state.metadata.get("total"):
+        state.set_metadata(total=total_known)
 
     total = 0
 
@@ -118,26 +152,72 @@ def run(cfg: dict, ctx: dict) -> dict:
                 url_ok = pd.Series(False, index=pdf.index)
                 url_final = pd.Series("", index=pdf.index, dtype="string")
 
+                url_map: Dict[int, str] = {
+                    idx: str(raw).strip()
+                    for idx, raw in url[mask].items()
+                    if isinstance(raw, str) and raw.strip()
+                }
+                if not url_map:
+                    pdf["url_site"] = url_final.astype("string")
+                    pdf["http_ok"] = url_ok.astype("boolean")
+                    table = pa.Table.from_pandas(pdf, preserve_index=False)
+                    writer.write_table(table)
+                    continue
+
+                completed_extra = state.metadata.get("completed_extra", {}) if isinstance(state.metadata.get("completed_extra"), dict) else {}
+                pending_keys = set(state.pending(url_map.values()))
+
+                processed_map: Dict[int, str] = {}
+                for idx, key in url_map.items():
+                    if key in pending_keys:
+                        processed_map[idx] = key
+                    else:
+                        record = completed_extra.get(key) if isinstance(completed_extra, dict) else {}
+                        url_ok.at[idx] = bool(record.get("ok", True))
+                        url_final.at[idx] = record.get("final_url", key)
+
                 tasks = {}
                 with ThreadPoolExecutor(max_workers=workers) as executor:
-                    for idx, raw in url[mask].items():
-                        tasks[executor.submit(probe_cached, str(raw))] = idx
+                    for idx, key in processed_map.items():
+                        if key not in seen_urls:
+                            total_known += 1
+                            seen_urls.add(key)
+                            state.set_metadata(total=total_known)
+                        state.mark_started(key)
+                        tasks[executor.submit(probe_cached, key)] = (idx, key)
                     for future in as_completed(tasks):
-                        idx = tasks[future]
+                        idx, key = tasks[future]
                         try:
                             ok, final = future.result()
+                            url_ok.at[idx] = ok
+                            url_final.at[idx] = final
+                            state.mark_completed(
+                                key,
+                                extra={
+                                    "ok": ok,
+                                    "final_url": final,
+                                },
+                            )
+                        except budget_middleware.BudgetExceededError:
+                            raise
                         except Exception as exc:  # pragma: no cover - defensive
                             if logger:
                                 logger.warning("probe failed for %s: %s", url.at[idx], exc)
-                            ok, final = False, ""
-                        url_ok.at[idx] = ok
-                        url_final.at[idx] = final
+                            url_ok.at[idx] = False
+                            url_final.at[idx] = ""
+                            state.mark_failed(key, str(exc))
 
                 pdf["url_site"] = url_final.astype("string")
                 pdf["http_ok"] = url_ok.astype("boolean")
                 table = pa.Table.from_pandas(pdf, preserve_index=False)
                 writer.write_table(table)
                 total += len(pdf)
+
+        state.set_metadata(
+            last_output=str(outp),
+            rows_processed=total,
+            total=total_known,
+        )
 
         return {
             "status": "OK", 
@@ -146,8 +226,9 @@ def run(cfg: dict, ctx: dict) -> dict:
             "duration_s": round(time.time() - t0, 3),
             "using_maps_data": using_maps_data
         }
+    except budget_middleware.BudgetExceededError:
+        raise
     except Exception as exc:
         if logger:
             logger.exception("site probe failed: %s", exc)
-        return {"status": "FAIL", "error": str(exc), "duration_s": round(time.time() - t0, 3)}
         return {"status": "FAIL", "error": str(exc), "duration_s": round(time.time() - t0, 3)}

@@ -18,15 +18,15 @@ import time
 import urllib.parse
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from typing import Callable, Dict, List, Optional, Set, Tuple
 import pandas as pd
 import pyarrow as pa
 import httpx
 from bs4 import BeautifulSoup
 
+from utils import budget_middleware
 from utils.parquet import ParquetBatchWriter
+from utils.state import SequentialRunState
 
 # Configuration
 MAPS_TIMEOUT = 15.0
@@ -183,7 +183,11 @@ def _extract_business_info_from_maps(html_content: str) -> Dict[str, any]:
     
     return result
 
-def _search_google_maps(query: str, session: httpx.Client) -> Dict[str, any]:
+def _search_google_maps(
+    query: str,
+    session: httpx.Client,
+    request_tracker: Optional[Callable[[int], None]] = None,
+) -> Dict[str, any]:
     """Search Google Maps for a business query."""
     result = {
         'query': query,
@@ -209,12 +213,10 @@ def _search_google_maps(query: str, session: httpx.Client) -> Dict[str, any]:
         delay = random.uniform(*REQUEST_DELAY)
         time.sleep(delay)
         
-        response = session.get(
-            url,
-            timeout=MAPS_TIMEOUT,
-            follow_redirects=True
-        )
-        
+        response = session.get(url, timeout=MAPS_TIMEOUT, follow_redirects=True)
+        if request_tracker:
+            request_tracker(len(response.content or b""))
+
         if response.status_code == 200:
             business_info = _extract_business_info_from_maps(response.text)
             result.update(business_info)
@@ -222,11 +224,25 @@ def _search_google_maps(query: str, session: httpx.Client) -> Dict[str, any]:
         else:
             result['search_status'] = f'http_error_{response.status_code}'
             
+    except budget_middleware.BudgetExceededError:
+        raise
     except httpx.TimeoutException:
+        if request_tracker:
+            request_tracker(0)
         result['search_status'] = 'timeout'
+    except httpx.HTTPError as exc:
+        if request_tracker:
+            response_obj = getattr(exc, "response", None)
+            size = len(response_obj.content or b"") if response_obj and response_obj.content else 0
+            request_tracker(size)
+        result['search_status'] = f'error_{exc.__class__.__name__}'
     except Exception as e:
+        if isinstance(e, budget_middleware.BudgetExceededError):
+            raise
+        if request_tracker:
+            request_tracker(0)
         result['search_status'] = f'error_{type(e).__name__}'
-    
+
     return result
 
 def _merge_maps_results(search_results: List[Dict]) -> pd.DataFrame:
@@ -279,7 +295,8 @@ def run(cfg: dict, ctx: dict) -> dict:
         input_path = Path(ctx["outdir"]) / "normalized.csv"
         if not input_path.exists():
             return {"status": "SKIPPED", "reason": "NO_NORMALIZED_DATA"}
-    
+
+    request_tracker = ctx.get("request_tracker")
     output_path = Path(ctx["outdir"]) / "google_maps_enriched.parquet"
     
     try:
@@ -320,14 +337,34 @@ def run(cfg: dict, ctx: dict) -> dict:
             addresses_to_search['company_name'] = ''
         
         # Get unique addresses to search
-        unique_queries = addresses_to_search['adresse'].unique().tolist()
-        
+        seen_queries: Set[str] = set()
+        unique_queries: List[str] = []
+        for raw in addresses_to_search['adresse']:
+            query = str(raw or "").strip()
+            if not query or query in seen_queries:
+                continue
+            seen_queries.add(query)
+            unique_queries.append(query)
+
+        if not unique_queries:
+            return {"status": "SKIPPED", "reason": "NO_QUERIES"}
+
+        state = SequentialRunState(outdir / "google_maps_state.json")
+        state.set_metadata(total=len(unique_queries))
+
+        completed_map = state.metadata.get("completed_extra")
+        if not isinstance(completed_map, dict):
+            completed_map = {}
+
+        pending_queries = set(state.pending(unique_queries))
+
         if logger:
-            logger.info(f"Starting Google Maps search for {len(unique_queries)} unique addresses")
-        
-        # Perform searches with extensive rate limiting
-        search_results = []
-        
+            logger.info(
+                "Starting Google Maps search for %d unique addresses (%d pending)",
+                len(unique_queries),
+                len(pending_queries),
+            )
+
         headers = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -337,34 +374,53 @@ def run(cfg: dict, ctx: dict) -> dict:
             "Upgrade-Insecure-Requests": "1"
         }
         
-        with httpx.Client(
-            headers=headers,
-            follow_redirects=True,
-            timeout=MAPS_TIMEOUT
-        ) as session:
-            
-            # Process queries sequentially to avoid being blocked
-            for i, query in enumerate(unique_queries):
+        with httpx.Client(headers=headers, follow_redirects=True, timeout=MAPS_TIMEOUT) as session:
+            for idx, query in enumerate(unique_queries):
+                if query not in pending_queries:
+                    continue
+
+                if logger:
+                    logger.debug("Searching Google Maps for query %d/%d: %s", idx + 1, len(unique_queries), query[:50])
+
+                state.mark_started(query)
                 try:
+                    result = _search_google_maps(query, session, request_tracker=request_tracker)
+                    state.mark_completed(query, extra=result)
+                    completed_map[query] = result
+                except budget_middleware.BudgetExceededError:
+                    state.mark_failed(query, "budget_exceeded")
+                    state.set_metadata(last_error=query, processed=idx)
+                    raise
+                except Exception as exc:
                     if logger:
-                        logger.debug(f"Searching Google Maps for query {i+1}/{len(unique_queries)}: {query[:50]}...")
-                    
-                    result = _search_google_maps(query, session)
-                    search_results.append(result)
-                    
-                    # Additional delay between requests
-                    if i < len(unique_queries) - 1:
+                        logger.error("Search failed for query %s: %s", query, exc)
+                    failure_result = {
+                        "query": query,
+                        "business_names": [],
+                        "phone_numbers": [],
+                        "emails": [],
+                        "ratings": [],
+                        "review_counts": [],
+                        "business_types": [],
+                        "websites": [],
+                        "director_names": [],
+                        "search_status": f"error_{type(exc).__name__}",
+                    }
+                    state.mark_completed(query, extra=failure_result)
+                    completed_map[query] = failure_result
+                finally:
+                    pending_queries.discard(query)
+                    if idx < len(unique_queries) - 1 and query in completed_map:
                         delay = random.uniform(*REQUEST_DELAY)
                         time.sleep(delay)
-                        
-                except Exception as e:
-                    if logger:
-                        logger.error(f"Search failed for query {query}: {e}")
-                    search_results.append({
-                        'query': query,
-                        'search_status': 'error'
-                    })
-        
+
+        meta_completed = state.metadata.get("completed_extra")
+        if isinstance(meta_completed, dict):
+            completed_map = meta_completed
+        search_results = [
+            completed_map[query] for query in unique_queries if isinstance(completed_map.get(query), dict)
+        ]
+
         # Merge results
         search_df = _merge_maps_results(search_results)
         
@@ -488,6 +544,12 @@ def run(cfg: dict, ctx: dict) -> dict:
             logger.info(f"Google Maps enrichment completed in {elapsed:.1f}s")
             logger.info(f"Successfully enriched {successful_searches}/{total_searches} queries")
         
+        state.set_metadata(
+            successful_searches=successful_searches,
+            records=len(search_results),
+            last_output=str(output_path),
+        )
+
         return {
             "status": "OK",
             "records_processed": len(enriched_df),

@@ -80,6 +80,12 @@ def request_with_backoff(
             continue
 
         last_response = response
+        if request_tracker:
+            try:
+                response_bytes = response.content or b""
+            except Exception:
+                response_bytes = b""
+            request_tracker(len(response_bytes))
         if retry_codes and response.status_code in retry_codes and attempt < max_attempts:
             base_delay = min(backoff_max, backoff_factor * (2 ** (attempt - 1)))
             sleep_for = base_delay * random.uniform(0.5, 1.0) if base_delay else 0.0

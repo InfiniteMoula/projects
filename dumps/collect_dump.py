@@ -9,6 +9,7 @@ def run(cfg, ctx):
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir")) / "dumps"
     io.ensure_dir(outdir)
     src = ctx.get("input")
+    request_tracker = ctx.get("request_tracker")
     if not src:
         return {"status": "SKIPPED", "reason": "NO_INPUT"}
 
@@ -22,7 +23,7 @@ def run(cfg, ctx):
         
         dest_path = outdir / filename
         try:
-            downloaded_path = stream_download(src, dest_path)
+            downloaded_path = stream_download(src, dest_path, request_tracker=request_tracker)
             file_size = downloaded_path.stat().st_size
             return {
                 "source_url": src,
@@ -38,7 +39,8 @@ def run(cfg, ctx):
     if not source_path.exists():
         raise FileNotFoundError(f"Source file not found: {source_path}")
     
-    # Copy the source file to the dumps directory
+    # Copy the source file to the dumps directory. Local copies do not
+    # consume the HTTP budget, so the request tracker is deliberately unused.
     dest_path = outdir / source_path.name
     try:
         import shutil

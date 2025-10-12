@@ -87,6 +87,8 @@ def run(cfg, ctx):
             if per_domain_rps > 0:
                 time.sleep(1.0 / per_domain_rps)
 
+            state.mark_started(url)
+
             try:
                 response = request_with_backoff(
                     client,
@@ -97,6 +99,13 @@ def run(cfg, ctx):
                     backoff_max=backoff_max,
                     request_tracker=request_tracker,
                 )
+            except budget_middleware.BudgetExceededError:
+                state.set_metadata(
+                    request_count=request_count,
+                    total_bytes=total_bytes,
+                    last_error=url,
+                )
+                raise
             except HttpError as exc:
                 if logger:
                     logger.warning("Failed to fetch %s after retries: %s", url, exc)
@@ -109,17 +118,6 @@ def run(cfg, ctx):
                 continue
 
             content_length = len(response.content or b"")
-
-            try:
-                if request_tracker:
-                    request_tracker(content_length)
-            except budget_middleware.BudgetExceededError:
-                state.set_metadata(
-                    request_count=request_count,
-                    total_bytes=total_bytes,
-                    last_error=url,
-                )
-                raise
 
             request_count += 1
 

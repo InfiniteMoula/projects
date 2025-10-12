@@ -7,7 +7,7 @@ import itertools
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -15,11 +15,12 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from readability import Document
 
-from utils import io
+from utils import budget_middleware, io
 from utils.rate import PerHostRateLimiter, TimeBudget
 from utils.robots import RobotsCache
 from utils.ua import UserAgentPool, load_user_agent_pool
 from utils.url import canonicalize, looks_like_home, registered_domain, resolve, strip_fragment
+from utils.state import SequentialRunState
 
 MAX_PAGE_BYTES = 1_000_000
 HTML_TRUNCATE_CHARS = 100_000
@@ -190,7 +191,8 @@ async def _crawl_target(
     max_pages: int,
     respect_robots: bool,
     time_budget: TimeBudget,
-) -> Tuple[List[Dict[str, object]], Dict[str, int]]:
+    request_tracker: Optional[Callable[[int], None]] = None,
+) -> Tuple[str, List[Dict[str, object]], Dict[str, int], Dict[str, object]]:
     pages: List[Dict[str, object]] = []
     stats = {"errors": 0, "status_4xx": 0, "status_5xx": 0}
 
@@ -251,6 +253,11 @@ async def _crawl_target(
             response = await client.get(current_url, headers=headers)
         except httpx.HTTPError as exc:
             stats["errors"] += 1
+            if request_tracker:
+                try:
+                    request_tracker(0)
+                except budget_middleware.BudgetExceededError:
+                    raise
             if logger:
                 logger.debug("crawl_site_async: request failed %s: %s", current_url, exc)
             continue
@@ -260,6 +267,11 @@ async def _crawl_target(
         content_type = (response.headers.get("content-type") or "").split(";")[0].lower()
         discovered_at = io.now_iso()
         content_bytes = response.content or b""
+        try:
+            if request_tracker:
+                request_tracker(len(content_bytes))
+        except budget_middleware.BudgetExceededError:
+            raise
 
         page_entry = {
             "domain": base_domain,
@@ -311,7 +323,13 @@ async def _crawl_target(
                 heapq.heappush(queue, (_path_priority(link), next(counter), link))
                 enqueued.add(link)
 
-    return pages, stats
+    metadata = {
+        "pages_crawled": pages_crawled,
+        "visited_urls": len(visited),
+        "start_urls": start_urls,
+        "incomplete": bool(queue),
+    }
+    return base_domain, pages, stats, metadata
 
 
 async def _crawl_targets_async(
@@ -326,39 +344,85 @@ async def _crawl_targets_async(
     respect_robots: bool,
     time_budget: TimeBudget,
     max_domains_parallel: int,
+    request_tracker: Optional[Callable[[int], None]] = None,
+    state: Optional[SequentialRunState] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, int], float]:
     pages: List[Dict[str, object]] = []
     stats = {"errors": 0, "status_4xx": 0, "status_5xx": 0}
     semaphore = asyncio.Semaphore(max(1, max_domains_parallel))
     start = time.perf_counter()
 
-    async def _bounded_crawl(target: CrawlTarget) -> Tuple[List[Dict[str, object]], Dict[str, int]]:
+    if state:
+        for target in targets:
+            state.mark_started(target.domain)
+
+    async def _bounded_crawl(
+        target: CrawlTarget,
+    ) -> Tuple[str, List[Dict[str, object]], Dict[str, int], Dict[str, object], Optional[str]]:
         async with semaphore:
             if time_budget.exhausted:
-                return [], {"errors": 0, "status_4xx": 0, "status_5xx": 0}
-            return await _crawl_target(
-                target,
-                client=client,
-                ua_pool=ua_pool,
-                robots_cache=robots_cache,
-                limiter=limiter,
-                logger=logger,
-                max_pages=max_pages,
-                respect_robots=respect_robots,
-                time_budget=time_budget,
-            )
+                return (
+                    target.domain,
+                    [],
+                    {"errors": 0, "status_4xx": 0, "status_5xx": 0},
+                    {
+                        "pages_crawled": 0,
+                        "visited_urls": 0,
+                        "start_urls": list(target.start_urls),
+                        "incomplete": True,
+                    },
+                    "time_budget_exhausted",
+                )
+            try:
+                domain, domain_pages, domain_stats, domain_meta = await _crawl_target(
+                    target,
+                    client=client,
+                    ua_pool=ua_pool,
+                    robots_cache=robots_cache,
+                    limiter=limiter,
+                    logger=logger,
+                    max_pages=max_pages,
+                    respect_robots=respect_robots,
+                    time_budget=time_budget,
+                    request_tracker=request_tracker,
+                )
+            except budget_middleware.BudgetExceededError:
+                raise
+            except Exception as exc:
+                if logger:
+                    logger.warning("crawl_site_async: domain %s failed: %s", target.domain, exc)
+                return (
+                    target.domain,
+                    [],
+                    {"errors": 1, "status_4xx": 0, "status_5xx": 0},
+                    {
+                        "pages_crawled": 0,
+                        "visited_urls": 0,
+                        "start_urls": list(target.start_urls),
+                        "incomplete": True,
+                    },
+                    str(exc),
+                )
+            return domain, domain_pages, domain_stats, domain_meta, None
 
     tasks = [asyncio.create_task(_bounded_crawl(target)) for target in targets]
     pending = set(tasks)
     try:
         for task in asyncio.as_completed(tasks):
-            domain_pages, domain_stats = await task
+            domain, domain_pages, domain_stats, domain_meta, domain_error = await task
             pending.discard(task)
             pages.extend(domain_pages)
             stats["errors"] += domain_stats.get("errors", 0)
             stats["status_4xx"] += domain_stats.get("status_4xx", 0)
             stats["status_5xx"] += domain_stats.get("status_5xx", 0)
-            if time_budget.exhausted:
+            if state:
+                if domain_error:
+                    state.mark_failed(domain, domain_error)
+                elif domain_meta.get("incomplete") and time_budget.exhausted:
+                    state.mark_failed(domain, "time_budget_exhausted")
+                else:
+                    state.mark_completed(domain, extra=domain_meta)
+            if time_budget.exhausted and domain_meta.get("incomplete"):
                 break
     finally:
         for task in pending:
@@ -408,15 +472,44 @@ def run(cfg: dict, ctx: dict) -> dict:
     if not targets:
         return {"status": "SKIPPED", "reason": "NO_TARGETS"}
 
+    crawl_dir = io.ensure_dir(outdir / "crawl")
+    state = SequentialRunState(crawl_dir / "crawl_async_state.json")
+    target_map = {target.domain: target for target in targets}
+    state.set_metadata(total=len(target_map))
+    pending_domains = set(state.pending(target_map.keys()))
+    selected_targets = [target for target in targets if target.domain in pending_domains]
+
+    existing_output = crawl_dir / "pages.parquet"
+    existing_pages: List[Dict[str, object]] = []
+    if existing_output.exists():
+        try:
+            existing_df = pd.read_parquet(existing_output)
+            existing_pages = existing_df.to_dict(orient="records")
+        except Exception:
+            if logger:
+                logger.debug("crawl_site_async: unable to preload existing pages from %s", existing_output)
+
+    if not selected_targets:
+        if existing_pages:
+            state.set_metadata(last_output=str(existing_output), last_pages=len(existing_pages))
+            return {
+                "status": "SKIPPED",
+                "reason": "NO_PENDING_TARGETS",
+                "output": str(existing_output),
+                "pages": len(existing_pages),
+            }
+        return {"status": "SKIPPED", "reason": "NO_PENDING_TARGETS"}
+
     ua_pool: UserAgentPool = ctx.get("user_agent_pool") or load_user_agent_pool(None)
     crawler_ua = ctx.get("crawler_user_agent") or DEFAULT_CRAWLER_UA
     robots_cache = RobotsCache(user_agent=crawler_ua)
     limiter = AsyncPerHostRateLimiter(per_host_rps=per_host_rps, jitter_range=(0.2, 0.8))
+    request_tracker = ctx.get("request_tracker")
 
     async def _execute() -> Tuple[List[Dict[str, object]], Dict[str, int], float]:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             return await _crawl_targets_async(
-                targets,
+                selected_targets,
                 client=client,
                 ua_pool=ua_pool,
                 robots_cache=robots_cache,
@@ -426,22 +519,26 @@ def run(cfg: dict, ctx: dict) -> dict:
                 respect_robots=respect_robots,
                 time_budget=time_budget,
                 max_domains_parallel=max_domains_parallel,
+                request_tracker=request_tracker,
+                state=state,
             )
 
-    pages, stats, elapsed = asyncio.run(_execute())
+    new_pages, stats, elapsed = asyncio.run(_execute())
 
-    if not pages:
+    combined_pages = existing_pages + new_pages
+
+    if not combined_pages:
         return {"status": "SKIPPED", "reason": "NO_PAGES"}
 
-    out_dir = io.ensure_dir(outdir / "crawl")
-    output_path = out_dir / "pages.parquet"
-    pd.DataFrame(pages).to_parquet(output_path, index=False)
+    output_path = crawl_dir / "pages.parquet"
+    pd.DataFrame(combined_pages).to_parquet(output_path, index=False)
+    state.set_metadata(last_output=str(output_path), last_pages=len(combined_pages))
 
-    pages_per_sec = (len(pages) / elapsed) if elapsed > 0 else 0.0
+    pages_per_sec = (len(new_pages) / elapsed) if elapsed > 0 else 0.0
     if logger:
         logger.info(
             "crawl_site_async: %d pages in %.2fs (%.2f pages/s) errors=%d 4xx=%d 5xx=%d",
-            len(pages),
+            len(new_pages),
             elapsed,
             pages_per_sec,
             stats.get("errors", 0),
@@ -452,5 +549,5 @@ def run(cfg: dict, ctx: dict) -> dict:
     return {
         "status": "OK",
         "output": str(output_path),
-        "pages": len(pages),
+        "pages": len(combined_pages),
     }

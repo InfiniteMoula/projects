@@ -14,11 +14,12 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from readability import Document
 
-from utils import io
+from utils import budget_middleware, io
 from utils.rate import PerHostRateLimiter, TimeBudget
 from utils.robots import RobotsCache
 from utils.ua import UserAgentPool, load_user_agent_pool
 from utils.url import canonicalize, looks_like_home, registered_domain, resolve, strip_fragment
+from utils.state import SequentialRunState
 
 MAX_PAGE_BYTES = 1_000_000
 HTML_TRUNCATE_CHARS = 100_000
@@ -167,7 +168,12 @@ def run(cfg: dict, ctx: dict) -> dict:
     per_host_rps = float(ctx.get("per_host_rps") or crawl_cfg.get("per_host_rps") or 1.0)
     respect_robots = bool(ctx.get("respect_robots", True)) if ctx.get("respect_robots") is not None else bool(crawl_cfg.get("respect_robots", True))
     time_budget = TimeBudget(ctx.get("crawl_time_budget_min") or crawl_cfg.get("time_budget_min"))
-    timeout = float(crawl_cfg.get("timeout_sec") or DEFAULT_TIMEOUT)
+    timeout = float(
+        ctx.get("crawl_timeout_s")
+        or crawl_cfg.get("timeout_s")
+        or crawl_cfg.get("timeout_sec")
+        or DEFAULT_TIMEOUT
+    )
 
     targets = _load_targets(serp_path)
     sample = int(ctx.get("sample") or 0)
@@ -183,15 +189,44 @@ def run(cfg: dict, ctx: dict) -> dict:
     crawler_ua = ctx.get("crawler_user_agent") or DEFAULT_CRAWLER_UA
     robots_cache = RobotsCache(user_agent=crawler_ua)
     limiter = PerHostRateLimiter(per_host_rps=per_host_rps, jitter_range=(0.2, 0.8))
+    request_tracker = ctx.get("request_tracker")
 
+    crawl_dir = io.ensure_dir(outdir / "crawl")
+    state = SequentialRunState(crawl_dir / "crawl_state.json")
+
+    target_map = {target.domain: target for target in targets}
+    state.set_metadata(total=len(target_map))
+    pending_domains = set(state.pending(target_map.keys()))
+    selected_targets = [target for target in targets if target.domain in pending_domains]
+
+    existing_output = crawl_dir / "pages.parquet"
     pages: List[Dict[str, object]] = []
+    if existing_output.exists():
+        try:
+            existing_df = pd.read_parquet(existing_output)
+            pages.extend(existing_df.to_dict(orient="records"))
+        except Exception:
+            if logger:
+                logger.debug("crawl_site: unable to preload existing pages from %s", existing_output)
+
+    if not selected_targets:
+        if pages:
+            state.set_metadata(last_output=str(existing_output), last_pages=len(pages))
+            return {
+                "status": "SKIPPED",
+                "reason": "NO_PENDING_TARGETS",
+                "output": str(existing_output),
+                "pages": len(pages),
+            }
+        return {"status": "SKIPPED", "reason": "NO_TARGETS"}
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        for target in targets:
+        for target in selected_targets:
             if time_budget.exhausted:
                 if logger:
                     logger.info("crawl_site: time budget exhausted")
                 break
+            state.mark_started(target.domain)
             base_domain = target.domain
             queue: List[tuple[int, int, str]] = []
             visited: Set[str] = set()
@@ -210,94 +245,128 @@ def run(cfg: dict, ctx: dict) -> dict:
 
             pages_crawled = 0
 
-            while queue and pages_crawled < max_pages and not time_budget.exhausted:
-                _, _, current_url = heapq.heappop(queue)
-                if current_url in visited:
-                    continue
-                visited.add(current_url)
+            try:
+                while queue and pages_crawled < max_pages and not time_budget.exhausted:
+                    _, _, current_url = heapq.heappop(queue)
+                    if current_url in visited:
+                        continue
+                    visited.add(current_url)
 
-                parsed = urlparse(current_url)
-                host = (parsed.hostname or "").lower()
-                if not host:
-                    continue
-                if _should_skip(current_url, base_domain, origin_host):
-                    continue
-                if respect_robots and not robots_cache.allowed(current_url, respect_robots=True):
-                    if logger:
-                        logger.debug("crawl_site: blocked by robots %s", current_url)
-                    continue
-                crawl_delay = robots_cache.crawl_delay(current_url) if respect_robots else None
-                if crawl_delay and crawl_delay > 0:
-                    time.sleep(crawl_delay)
-                limiter.wait(host)
-                headers = {
-                    "User-Agent": ua_pool.get(),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.6",
-                }
-                try:
-                    response = client.get(current_url, headers=headers)
-                except httpx.HTTPError as exc:
-                    if logger:
-                        logger.debug("crawl_site: request failed %s: %s", current_url, exc)
-                    continue
-
-                final_url = strip_fragment(str(response.url))
-                status = response.status_code
-                content_type = (response.headers.get("content-type") or "").split(";")[0].lower()
-                discovered_at = io.now_iso()
-                content_bytes = response.content or b""
-                page_entry = {
-                    "domain": base_domain,
-                    "requested_url": current_url,
-                    "url": final_url,
-                    "status": status,
-                    "content_type": content_type,
-                    "bytes": len(content_bytes),
-                    "discovered_at": discovered_at,
-                    "siren_list": sorted(target.sirens),
-                    "denominations": sorted(target.denominations),
-                    "https": final_url.startswith("https"),
-                }
-
-                if status >= 400:
-                    pages.append(page_entry)
-                    continue
-                if "text" not in content_type and "json" not in content_type:
-                    pages.append(page_entry)
-                    continue
-                if len(content_bytes) > MAX_PAGE_BYTES:
-                    content_bytes = content_bytes[:MAX_PAGE_BYTES]
-                try:
-                    html = content_bytes.decode(response.encoding or "utf-8", errors="replace")
-                except LookupError:
-                    html = content_bytes.decode("utf-8", errors="replace")
-                html_trunc = html[:HTML_TRUNCATE_CHARS]
-                text_content = _extract_text(html)
-                page_entry.update(
-                    {
-                        "content_text": text_content,
-                        "content_html_trunc": html_trunc,
+                    parsed = urlparse(current_url)
+                    host = (parsed.hostname or "").lower()
+                    if not host:
+                        continue
+                    if _should_skip(current_url, base_domain, origin_host):
+                        continue
+                    if respect_robots and not robots_cache.allowed(current_url, respect_robots=True):
+                        if logger:
+                            logger.debug("crawl_site: blocked by robots %s", current_url)
+                        continue
+                    crawl_delay = robots_cache.crawl_delay(current_url) if respect_robots else None
+                    if crawl_delay and crawl_delay > 0:
+                        time.sleep(crawl_delay)
+                    limiter.wait(host)
+                    headers = {
+                        "User-Agent": ua_pool.get(),
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.6",
                     }
-                )
-                pages.append(page_entry)
-                pages_crawled += 1
+                    try:
+                        response = client.get(current_url, headers=headers)
+                    except httpx.HTTPError as exc:
+                        if request_tracker:
+                            try:
+                                request_tracker(0)
+                            except budget_middleware.BudgetExceededError:
+                                state.mark_failed(base_domain, "budget_exceeded")
+                                raise
+                        if logger:
+                            logger.debug("crawl_site: request failed %s: %s", current_url, exc)
+                        continue
 
-                if "html" in content_type and pages_crawled < max_pages:
-                    for link in _extract_links(final_url, html):
-                        if link in enqueued:
-                            continue
-                        if _should_skip(link, base_domain, origin_host):
-                            continue
-                        heapq.heappush(queue, (_path_priority(link), next(counter), link))
-                        enqueued.add(link)
+                    content_bytes = response.content or b""
+                    try:
+                        if request_tracker:
+                            request_tracker(len(content_bytes))
+                    except budget_middleware.BudgetExceededError:
+                        state.mark_failed(base_domain, "budget_exceeded")
+                        raise
+
+                    final_url = strip_fragment(str(response.url))
+                    status = response.status_code
+                    content_type = (response.headers.get("content-type") or "").split(";")[0].lower()
+                    discovered_at = io.now_iso()
+                    page_entry = {
+                        "domain": base_domain,
+                        "requested_url": current_url,
+                        "url": final_url,
+                        "status": status,
+                        "content_type": content_type,
+                        "bytes": len(content_bytes),
+                        "discovered_at": discovered_at,
+                        "siren_list": sorted(target.sirens),
+                        "denominations": sorted(target.denominations),
+                        "https": final_url.startswith("https"),
+                    }
+
+                    if status >= 400:
+                        pages.append(page_entry)
+                        continue
+                    if "text" not in content_type and "json" not in content_type:
+                        pages.append(page_entry)
+                        continue
+                    if len(content_bytes) > MAX_PAGE_BYTES:
+                        content_bytes = content_bytes[:MAX_PAGE_BYTES]
+                    try:
+                        html = content_bytes.decode(response.encoding or "utf-8", errors="replace")
+                    except LookupError:
+                        html = content_bytes.decode("utf-8", errors="replace")
+                    html_trunc = html[:HTML_TRUNCATE_CHARS]
+                    text_content = _extract_text(html)
+                    page_entry.update(
+                        {
+                            "content_text": text_content,
+                            "content_html_trunc": html_trunc,
+                        }
+                    )
+                    pages.append(page_entry)
+                    pages_crawled += 1
+
+                    if "html" in content_type and pages_crawled < max_pages:
+                        for link in _extract_links(final_url, html):
+                            if link in enqueued:
+                                continue
+                            if _should_skip(link, base_domain, origin_host):
+                                continue
+                            heapq.heappush(queue, (_path_priority(link), next(counter), link))
+                            enqueued.add(link)
+            except budget_middleware.BudgetExceededError:
+                raise
+            except Exception as exc:
+                if logger:
+                    logger.warning("crawl_site: domain %s failed: %s", base_domain, exc)
+                state.mark_failed(base_domain, str(exc))
+                continue
+
+            if time_budget.exhausted and queue:
+                state.mark_failed(base_domain, "time_budget_exhausted")
+                break
+
+            state.mark_completed(
+                base_domain,
+                extra={
+                    "pages_crawled": pages_crawled,
+                    "visited_urls": len(visited),
+                    "start_urls": start_urls,
+                },
+            )
 
     if not pages:
         return {"status": "SKIPPED", "reason": "NO_PAGES"}
 
-    out_dir = io.ensure_dir(outdir / "crawl")
-    output_path = out_dir / "pages.parquet"
+    output_path = crawl_dir / "pages.parquet"
     pd.DataFrame(pages).to_parquet(output_path, index=False)
+    state.set_metadata(last_output=str(output_path), last_pages=len(pages))
 
     return {
         "status": "OK",
