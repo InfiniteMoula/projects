@@ -63,6 +63,7 @@ STEP_REGISTRY = {
     "quality.clean_contacts.final": "quality.clean_contacts:run",
     "monitor.scraper": "monitor.monitor_scraper:run",
     "package.export": "package.exporter:run",
+    "finalize.premium_dataset": "utils.filters:run_finalize_premium_dataset",
 }
 
 STEP_DEPENDENCIES = {
@@ -104,6 +105,7 @@ STEP_DEPENDENCIES = {
     "quality.clean_contacts.final": {"parse.contacts.final"},
     "monitor.scraper": {"quality.clean_contacts.final"},
     "package.export": {"quality.score"},
+    "finalize.premium_dataset": {"package.export"},
 }
 
 PROFILES = {
@@ -114,6 +116,7 @@ PROFILES = {
         "quality.checks",
         "quality.score",
         "package.export",
+        "finalize.premium_dataset",
     ],
     "standard": [
         "dumps.collect",
@@ -131,6 +134,7 @@ PROFILES = {
         "quality.checks",
         "quality.score",
         "package.export",
+        "finalize.premium_dataset",
     ],
     "hybrid": [
         "http.serp",
@@ -142,6 +146,7 @@ PROFILES = {
         "quality.clean_contacts.final",
         "monitor.scraper",
         "package.export",
+        "finalize.premium_dataset",
     ],
     "deep": [
         "dumps.collect",
@@ -163,6 +168,7 @@ PROFILES = {
         "quality.checks",
         "quality.score",
         "package.export",
+        "finalize.premium_dataset",
     ],
     "internal": [
         "dumps.collect",
@@ -179,6 +185,7 @@ PROFILES = {
         "quality.enrich_score",
         "quality.score",
         "package.export",
+        "finalize.premium_dataset",
     ],
 }
 
@@ -196,6 +203,7 @@ STEP_OUTPUT_HINTS = {
     "quality.clean_contacts.final": ["contacts/contacts_clean.parquet"],
     "headless.collect_fallback": ["headless/pages_dynamic.parquet"],
     "monitor.scraper": ["metrics/summary.json", "metrics/scraper_stats.csv"],
+    "finalize.premium_dataset": ["dataset.csv", "dataset.parquet"],
 }
 
 

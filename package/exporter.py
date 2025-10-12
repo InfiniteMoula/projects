@@ -60,13 +60,13 @@ def _prepare_contacts(df: pd.DataFrame) -> pd.DataFrame:
 
 def _prepare_base(df: pd.DataFrame) -> pd.DataFrame:
     base = df.copy()
+    _ensure_column(base, "domain", ["domain", "top_domain", "website", "site"])
     base["siren_key"] = base.get("siren").map(_normalize_siren)
-    base["domain_key"] = base.get("domain", "").map(_normalize_domain)
-    base["domain_key"] = base["domain_key"].fillna("")
+    domain_series = base["domain"].map(_normalize_domain)
+    base["domain_key"] = domain_series.fillna("")
     _ensure_column(base, "name", ["name", "denomination", "denomination_usuelle"])
     _ensure_column(base, "naf", ["naf", "naf_code", "ape"])
     _ensure_column(base, "region", ["region", "region_name", "region_label"])
-    _ensure_column(base, "domain", ["domain", "top_domain", "website", "site"])
     return base
 
 
