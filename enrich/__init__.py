@@ -7,4 +7,6 @@ This package contains modules for enriching data with additional information:
 - dns_checks: Perform DNS resolution and validation
 - email_heuristics: Generate and validate email addresses
 - phone_checks: Validate and normalize phone numbers
+- site_web_search: Discover official websites using SERP providers
+- enrich_contacts: Extract emails and phone numbers from company websites
 """
