@@ -1,6 +1,7 @@
 import argparse
 import copy
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -9,13 +10,16 @@ import traceback
 import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
+from functools import lru_cache
 import threading
-from typing import Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from pathlib import Path
 
 import psutil
 import yaml
 from jsonschema import ValidationError as SchemaValidationError, validate as js_validate
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ValidationError as PydanticValidationError
 
 import create_job
 from utils import budget_middleware, config, io, pipeline
@@ -26,6 +30,74 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     prometheus_exporter = None
 
+LOGGER = logging.getLogger(__name__)
+
+
+class HttpClientSettings(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    timeout: Optional[float] = Field(default=None, ge=0.0)
+    max_concurrent_requests: Optional[int] = Field(default=None, ge=1)
+    per_host_limit: Optional[int] = Field(default=None, ge=1)
+    max_connections: Optional[int] = Field(default=None, ge=1)
+    max_keepalive_connections: Optional[int] = Field(default=None, ge=1)
+
+
+class DomainsSettings(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    providers: List[str] = Field(default_factory=list)
+    providers_config: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    http_client: HttpClientSettings = Field(default_factory=HttpClientSettings)
+    serp_score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    heuristic_score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    heuristic_tlds: List[str] = Field(default_factory=list)
+    heuristic_prefixes: List[str] = Field(default_factory=list)
+
+
+class ContactsSettings(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    http_client: HttpClientSettings = Field(default_factory=HttpClientSettings)
+    paths: List[str] = Field(default_factory=list)
+    max_pages_per_site: Optional[int] = Field(default=None, ge=1)
+    sitemap_limit: Optional[int] = Field(default=None, ge=0)
+
+
+class LinkedinSettings(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    providers: List[str] = Field(default_factory=list)
+    providers_config: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    http_client: HttpClientSettings = Field(default_factory=HttpClientSettings)
+
+
+class EnrichmentConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    domains: Optional[DomainsSettings] = None
+    contacts: Optional[ContactsSettings] = None
+    linkedin: Optional[LinkedinSettings] = None
+
+
+@lru_cache(maxsize=1)
+def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> EnrichmentConfig:
+    config_path = Path(path).expanduser().resolve()
+    if not config_path.exists():
+        LOGGER.debug("Enrichment config %s not found; using defaults", config_path)
+        return EnrichmentConfig()
+    try:
+        raw_data = yaml.safe_load(io.read_text(config_path))
+    except io.IoError as exc:
+        raise RuntimeError(f"Unable to read enrichment config: {config_path}") from exc
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML in enrichment config {config_path}: {exc}") from exc
+
+    raw_payload = raw_data or {}
+    try:
+        return EnrichmentConfig.model_validate(raw_payload)
+    except PydanticValidationError as exc:
+        raise ValueError(f"Invalid enrichment config {config_path}: {exc}") from exc
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
     "api.collect": "api.collect_api:run",
@@ -53,6 +125,9 @@ STEP_REGISTRY = {
     "enrich.phone": "enrich.phone_checks:run",
     "enrich.address": "enrich.address_search:run",
     "enrich.google_maps": "enrich.google_maps_search:run",
+    "enrich.domains": "enrich.enrich_domains:run",
+    "enrich.contacts": "enrich.enrich_contacts:run",
+    "enrich.linkedin": "enrich.enrich_linkedin:run",
     "scraper.maps": "scraper.maps_scraper:run",
     "quality.checks": "quality.checks:run",
     "quality.dedupe": "quality.dedupe:run",
@@ -94,6 +169,9 @@ STEP_DEPENDENCIES = {
     "enrich.email": {"enrich.google_maps"},
     "enrich.phone": {"enrich.google_maps"},
     "enrich.address": {"normalize.standardize"},
+    "enrich.domains": {"normalize.standardize", "enrich.address"},
+    "enrich.contacts": {"enrich.domains"},
+    "enrich.linkedin": {"normalize.standardize"},
     "enrich.google_maps": {"enrich.address"},
     "scraper.maps": {"normalize.standardize", "enrich.address"},
     "quality.checks": {"normalize.standardize"},
@@ -135,6 +213,18 @@ PROFILES = {
         "quality.score",
         "package.export",
         "finalize.premium_dataset",
+    ],
+    "standard_nocapital": [
+        "dumps.collect",
+        "api.collect",
+        "normalize.standardize",
+        "enrich.address",
+        "enrich.domains",
+        "enrich.contacts",
+        "enrich.linkedin",
+        "quality.checks",
+        "quality.score",
+        "package.export",
     ],
     "hybrid": [
         "http.serp",
@@ -508,6 +598,9 @@ def build_context(args, job):
             }
         else:
             ctx["_prometheus"] = False
+
+    enrichment_cfg = load_enrichment_config()
+    ctx["enrichment_config"] = enrichment_cfg.model_dump()
 
     return ctx
 

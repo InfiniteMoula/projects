@@ -9,4 +9,5 @@ This package contains modules for enriching data with additional information:
 - phone_checks: Validate and normalize phone numbers
 - site_web_search: Discover official websites using SERP providers
 - enrich_contacts: Extract emails and phone numbers from company websites
+- enrich_linkedin: Locate LinkedIn company pages using SERP providers
 """

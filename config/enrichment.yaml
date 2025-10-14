@@ -1,0 +1,30 @@
+domains:
+  providers: ["bing", "duckduckgo"]
+  providers_config: {}
+  http_client:
+    timeout: 8.0
+    max_concurrent_requests: 6
+    per_host_limit: 2
+  serp_score_threshold: 0.65
+  heuristic_score_threshold: 0.5
+  heuristic_tlds: ["fr", "com", "eu"]
+  heuristic_prefixes: ["", "www."]
+
+contacts:
+  http_client:
+    timeout: 8.0
+    max_concurrent_requests: 4
+    per_host_limit: 2
+  paths:
+    - /contact
+    - /mentions-legales
+    - /a-propos
+    - /privacy
+  max_pages_per_site: 8
+  sitemap_limit: 5
+
+linkedin:
+  providers: ["bing", "duckduckgo"]
+  providers_config: {}
+  http_client:
+    timeout: 6.0

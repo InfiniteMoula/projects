@@ -6,6 +6,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
@@ -13,7 +14,8 @@ from xml.etree import ElementTree
 import pandas as pd
 import phonenumbers
 from bs4 import BeautifulSoup
-from phonenumbers.phonenumberutil import NumberParseException, NumberType
+from phonenumbers import PhoneNumberType
+from phonenumbers.phonenumberutil import NumberParseException
 
 try:
     import tldextract
@@ -23,6 +25,7 @@ except ImportError:  # pragma: no cover - defensive
 from net.http_client import HttpClient
 
 LOGGER = logging.getLogger("enrich.enrich_contacts")
+NumberType = PhoneNumberType
 
 EMAIL_REGEX = re.compile(
     r"(?<![A-Z0-9._%+-])(?:mailto:)?([A-Z0-9][A-Z0-9._%+-]{0,63}@[A-Z0-9.-]+\.[A-Z]{2,63})",
@@ -125,7 +128,7 @@ class PhoneCandidate:
     city_match: bool = False
 
 
-def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
+def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Enrich dataframe with official contact emails and phone numbers discovered from websites.
     """
@@ -142,7 +145,13 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
         ):
             if col not in df_out.columns:
                 df_out[col] = pd.NA
-        return df_out
+        return df_out, {
+            "sites": 0,
+            "emails_found": 0,
+            "phones_found": 0,
+            "pages_fetched": 0,
+            "avg_time": 0.0,
+        }
 
     http_cfg = cfg.get("http_client", {"timeout": DEFAULT_TIMEOUT})
     page_paths = tuple(cfg.get("paths", DEFAULT_PATHS))
@@ -282,7 +291,14 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
         total_pages,
         avg_time,
     )
-    return df_out
+    summary = {
+        "sites": total_sites,
+        "emails_found": total_emails,
+        "phones_found": total_phones,
+        "pages_fetched": total_pages,
+        "avg_time": avg_time,
+    }
+    return df_out, summary
 
 
 def _safe_str(value: Any) -> str:
@@ -602,4 +618,64 @@ def _normalize_text(text: str) -> str:
     return normalized.strip()
 
 
-__all__ = ["run"]
+def run(cfg: Dict, ctx: Dict) -> Dict[str, object]:
+    logger = ctx.get("logger") or LOGGER
+    outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
+    start = time.time()
+
+    input_candidates = [
+        outdir / "domains_enriched.parquet",
+        outdir / "domains_enriched.csv",
+        outdir / "normalized.parquet",
+        outdir / "normalized.csv",
+    ]
+    source_path = next((candidate for candidate in input_candidates if candidate.exists()), None)
+    if source_path is None:
+        if logger:
+            logger.warning("enrich.contacts skipped: no input dataset found")
+        return {"status": "SKIPPED", "reason": "NO_INPUT_DATA"}
+
+    try:
+        if source_path.suffix == ".parquet":
+            df_in = pd.read_parquet(source_path)
+        else:
+            df_in = pd.read_csv(source_path)
+    except Exception as exc:  # pragma: no cover - defensive
+        if logger:
+            logger.exception("Failed to load input data for enrich.contacts from %s", source_path)
+        return {"status": "FAIL", "error": str(exc)}
+
+    if df_in.empty:
+        if logger:
+            logger.info("enrich.contacts skipped: empty dataset (%s)", source_path.name)
+        return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
+
+    contacts_cfg = (ctx.get("enrichment_config") or {}).get("contacts") or {}
+    df_out, summary = process_contacts(df_in, contacts_cfg)
+
+    output_path = outdir / "contacts_enriched.parquet"
+    csv_path = outdir / "contacts_enriched.csv"
+    df_out.to_parquet(output_path, index=False)
+    df_out.to_csv(csv_path, index=False)
+
+    duration = round(time.time() - start, 3)
+    if logger:
+        logger.info(
+            "enrich.contacts completed: emails=%d phones=%d (duration=%.3fs)",
+            summary.get("emails_found", 0),
+            summary.get("phones_found", 0),
+            duration,
+        )
+
+    return {
+        "status": "OK",
+        "file": str(output_path),
+        "rows": len(df_out),
+        "emails_found": summary.get("emails_found", 0),
+        "phones_found": summary.get("phones_found", 0),
+        "duration_s": duration,
+        "source": str(source_path),
+    }
+
+
+__all__ = ["process_contacts", "run"]
