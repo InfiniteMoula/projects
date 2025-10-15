@@ -5,6 +5,7 @@ import logging
 import random
 import threading
 import time
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -27,11 +28,47 @@ class _CacheEntry:
     user_agent: str
 
 
+class RequestLimiter:
+    """Shared limiter coordinating synchronous and asynchronous HTTP request concurrency."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, int(limit))
+        self._semaphore = threading.Semaphore(self._limit)
+
+    @contextmanager
+    def sync(self) -> Iterable[None]:
+        self._semaphore.acquire()
+        try:
+            yield
+        finally:
+            self._semaphore.release()
+
+    @asynccontextmanager
+    async def async_acquire(self) -> Iterable[None]:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._semaphore.acquire)
+        try:
+            yield
+        finally:
+            self._semaphore.release()
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+
 class HttpClient:
     """HTTP client with shared pools, caching, retries, and robots handling."""
 
     def __init__(self, cfg: Mapping[str, Any]) -> None:
-        self._cfg = dict(cfg)
+        cfg_dict = dict(cfg)
+        limiter_candidate = cfg_dict.pop("shared_request_limiter", None)
+        self._shared_limiter: Optional[RequestLimiter]
+        if isinstance(limiter_candidate, RequestLimiter):
+            self._shared_limiter = limiter_candidate
+        else:
+            self._shared_limiter = None
+        self._cfg = cfg_dict
         self._timeout_seconds = float(self._cfg.get("timeout", 8.0))
         self._max_concurrent_requests = max(1, int(self._cfg.get("max_concurrent_requests", 10)))
         self._per_host_limit = max(1, int(self._cfg.get("per_host_limit", 2)))
@@ -181,56 +218,56 @@ class HttpClient:
             host = self._extract_host(url)
             semaphore = await self._per_host_semaphore(host)
             assert self._global_semaphore is not None  # sanity
-            async with self._global_semaphore, semaphore:
-                await self._maybe_wait_async(host)
-                attempt = 0
-                last_text = ""
-                last_status = 0
-                start = time.perf_counter()
-                while attempt < self._retry_attempts:
-                    headers = self._build_headers(ua)
-                    try:
-                        response = await self._async_client.get(url, headers=headers)
-                        last_status = response.status_code
-                        last_text = response.text
-                        duration = time.perf_counter() - start
-                        if response.status_code in {429, 503} and attempt + 1 < self._retry_attempts:
-                            LOGGER.warning(
-                                "GET %s retryable status=%s attempt=%s",
-                                url,
-                                response.status_code,
-                                attempt + 1,
-                            )
-                            await self._sleep_backoff_async(attempt)
-                            attempt += 1
-                            continue
+            async with self._async_limit():
+                async with self._global_semaphore, semaphore:
+                    await self._maybe_wait_async(host)
+                    attempt = 0
+                    last_text = ""
+                    last_status = 0
+                    start = time.perf_counter()
+                    while attempt < self._retry_attempts:
+                        headers = self._build_headers(ua)
+                        try:
+                            response = await self._async_client.get(url, headers=headers)
+                            last_status = response.status_code
+                            last_text = response.text
+                            duration = time.perf_counter() - start
+                            if response.status_code in {429, 503} and attempt + 1 < self._retry_attempts:
+                                LOGGER.warning(
+                                    "GET %s retryable status=%s attempt=%s",
+                                    url,
+                                    response.status_code,
+                                    attempt + 1,
+                                )
+                                await self._sleep_backoff_async(attempt)
+                                attempt += 1
+                                continue
 
-                        LOGGER.info("GET %s status=%s duration=%.3f", url, response.status_code, duration)
-                        if (
-                            response.status_code == httpx.codes.OK
-                            and self._cache_enabled
-                        ):
-                            await asyncio.to_thread(self._write_cache, url, response, ua)
-                        break
-                    except httpx.TimeoutException as exc:
-                        duration = time.perf_counter() - start
-                        LOGGER.warning("GET %s timeout attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc)
-                        last_status = 0
-                        last_text = ""
-                        if attempt + 1 >= self._retry_attempts:
+                            LOGGER.info("GET %s status=%s duration=%.3f", url, response.status_code, duration)
+                            if response.status_code == httpx.codes.OK and self._cache_enabled:
+                                await asyncio.to_thread(self._write_cache, url, response, ua)
                             break
-                        await self._sleep_backoff_async(attempt)
-                    except httpx.HTTPError as exc:
-                        duration = time.perf_counter() - start
-                        LOGGER.warning("GET %s http error attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc)
-                        last_status = 0
-                        last_text = ""
-                        if attempt + 1 >= self._retry_attempts:
-                            break
-                        await self._sleep_backoff_async(attempt)
-                    attempt += 1
-                await self._mark_async(host)
-                return last_status, last_text
+                        except httpx.TimeoutException as exc:
+                            duration = time.perf_counter() - start
+                            LOGGER.warning("GET %s timeout attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc)
+                            last_status = 0
+                            last_text = ""
+                            if attempt + 1 >= self._retry_attempts:
+                                break
+                            await self._sleep_backoff_async(attempt)
+                        except httpx.HTTPError as exc:
+                            duration = time.perf_counter() - start
+                            LOGGER.warning(
+                                "GET %s http error attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc
+                            )
+                            last_status = 0
+                            last_text = ""
+                            if attempt + 1 >= self._retry_attempts:
+                                break
+                            await self._sleep_backoff_async(attempt)
+                        attempt += 1
+                    await self._mark_async(host)
+                    return last_status, last_text
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("GET %s unexpected error: %s", url, exc)
             return 0, ""
@@ -242,7 +279,8 @@ class HttpClient:
         start = time.perf_counter()
         while attempt < self._retry_attempts:
             try:
-                response = self._sync_client.request(method, url, headers=headers)
+                with self._sync_limit():
+                    response = self._sync_client.request(method, url, headers=headers)
                 last_response = response
                 duration = time.perf_counter() - start
                 if response.status_code in {429, 503} and attempt + 1 < self._retry_attempts:
@@ -309,13 +347,14 @@ class HttpClient:
         robots_url = urlunparse((scheme, netloc, "/robots.txt", "", "", ""))
         parser.set_url(robots_url)
         try:
-            response = self._sync_client.get(
-                robots_url,
-                headers={
-                    "User-Agent": ua,
-                    "Accept": "text/plain, */*;q=0.5",
-                },
-            )
+            with self._sync_limit():
+                response = self._sync_client.get(
+                    robots_url,
+                    headers={
+                        "User-Agent": ua,
+                        "Accept": "text/plain, */*;q=0.5",
+                    },
+                )
         except httpx.HTTPError as exc:
             LOGGER.debug("robots fetch failed for %s: %s", robots_url, exc)
             parser.parse(["User-agent: *", "Disallow:"])
@@ -478,6 +517,22 @@ class HttpClient:
         delay = min(self._backoff_factor * (2 ** attempt), self._backoff_max)
         jitter = random.uniform(0.5, 1.5)
         time.sleep(delay * jitter)
+
+    @contextmanager
+    def _sync_limit(self) -> Iterable[None]:
+        if not self._shared_limiter:
+            yield
+        else:
+            with self._shared_limiter.sync():
+                yield
+
+    @asynccontextmanager
+    async def _async_limit(self) -> Iterable[None]:
+        if not self._shared_limiter:
+            yield
+        else:
+            async with self._shared_limiter.async_acquire():
+                yield
 
     def _extract_host(self, url: str) -> str:
         parsed = urlparse(url)

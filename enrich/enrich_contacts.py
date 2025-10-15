@@ -5,6 +5,7 @@ import logging
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - defensive
     tldextract = None
 
 from net.http_client import HttpClient
+from net.http_client import RequestLimiter
 from utils.scoring import score_email, score_phone
 from net import robots, sitemap as sitemap_utils
 
@@ -93,6 +95,8 @@ DEFAULT_PATHS = (
 DEFAULT_MAX_PAGES = 8
 DEFAULT_SITEMAP_LIMIT = 5
 DEFAULT_TIMEOUT = 8.0
+DEFAULT_CHUNK_SIZE = 300
+DEFAULT_MAX_WORKERS = 8
 
 
 @dataclass
@@ -115,7 +119,116 @@ class PhoneCandidate:
     city_match: bool = False
 
 
+def _resolve_chunk_size(cfg: Mapping[str, Any]) -> int:
+    value = cfg.get("chunk_size")
+    if value is None:
+        return DEFAULT_CHUNK_SIZE
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_CHUNK_SIZE
+    if size <= 0:
+        return DEFAULT_CHUNK_SIZE
+    return max(200, min(size, 500))
+
+
+def _resolve_max_workers(cfg: Mapping[str, Any]) -> int:
+    value = cfg.get("max_workers")
+    if value is None:
+        return DEFAULT_MAX_WORKERS
+    try:
+        workers = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_WORKERS
+    return workers if workers > 0 else DEFAULT_MAX_WORKERS
+
+
+def _prepare_http_cfg(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    http_cfg_raw = cfg.get("http_client", {"timeout": DEFAULT_TIMEOUT})
+    if hasattr(http_cfg_raw, "model_dump"):
+        http_cfg = dict(http_cfg_raw.model_dump())
+    elif hasattr(http_cfg_raw, "dict"):
+        http_cfg = dict(http_cfg_raw.dict())
+    elif isinstance(http_cfg_raw, Mapping):
+        http_cfg = dict(http_cfg_raw)
+    else:
+        http_cfg = dict(http_cfg_raw or {})
+    http_cfg.setdefault("timeout", DEFAULT_TIMEOUT)
+    return http_cfg
+
+
+def _iter_chunks(df: pd.DataFrame, chunk_size: int) -> Iterable[Tuple[int, pd.DataFrame]]:
+    total = len(df)
+    if chunk_size <= 0 or chunk_size >= total:
+        yield 0, df
+        return
+    for chunk_index, start in enumerate(range(0, total, chunk_size)):
+        stop = min(start + chunk_size, total)
+        yield chunk_index, df.iloc[start:stop].copy()
+
+
 def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Enrich dataframe with official contact emails and phone numbers discovered from websites
+    using chunked concurrent processing.
+    """
+
+    http_cfg = _prepare_http_cfg(cfg)
+    chunk_size = _resolve_chunk_size(cfg)
+    max_workers = _resolve_max_workers(cfg)
+    max_concurrent_requests = max(1, int(http_cfg.get("max_concurrent_requests", max_workers)))
+    request_limiter = RequestLimiter(max_concurrent_requests)
+    http_cfg["shared_request_limiter"] = request_limiter
+
+    base_cfg: Dict[str, Any] = dict(cfg)
+    base_cfg["http_client"] = http_cfg
+
+    if df_in is None:
+        return _process_contacts_serial(df_in, base_cfg)
+
+    total_rows = len(df_in)
+    if total_rows == 0 or max_workers <= 1 or total_rows <= chunk_size:
+        return _process_contacts_serial(df_in, base_cfg)
+
+    worker_count = min(max_workers, max(1, (total_rows + chunk_size - 1) // chunk_size))
+    chunk_results: Dict[int, pd.DataFrame] = {}
+    chunk_summaries: Dict[int, Dict[str, Any]] = {}
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {}
+        for chunk_index, chunk_df in _iter_chunks(df_in, chunk_size):
+            chunk_cfg = dict(base_cfg)
+            chunk_cfg["http_client"] = dict(http_cfg)
+            futures[executor.submit(_process_contacts_serial, chunk_df, chunk_cfg)] = chunk_index
+        for future in as_completed(futures):
+            chunk_index = futures[future]
+            chunk_df, summary = future.result()
+            chunk_results[chunk_index] = chunk_df
+            chunk_summaries[chunk_index] = summary
+
+    ordered_dataframes = [chunk_results[idx] for idx in sorted(chunk_results)]
+    df_out = pd.concat(ordered_dataframes)
+    df_out = df_out.reindex(df_in.index)
+
+    total_sites = sum(summary.get("sites", 0) for summary in chunk_summaries.values())
+    total_emails = sum(summary.get("emails_found", 0) for summary in chunk_summaries.values())
+    total_phones = sum(summary.get("phones_found", 0) for summary in chunk_summaries.values())
+    total_pages = sum(summary.get("pages_fetched", 0) for summary in chunk_summaries.values())
+    weighted_time = sum(summary.get("avg_time", 0.0) * summary.get("sites", 0) for summary in chunk_summaries.values())
+    avg_time = (weighted_time / total_sites) if total_sites else 0.0
+
+    summary = {
+        "sites": total_sites,
+        "emails_found": total_emails,
+        "phones_found": total_phones,
+        "pages_fetched": total_pages,
+        "avg_time": avg_time,
+    }
+
+    return df_out, summary
+
+
+def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Enrich dataframe with official contact emails and phone numbers discovered from websites.
     """
@@ -615,7 +728,25 @@ def run(cfg: Dict, ctx: Dict) -> Dict[str, object]:
             logger.info("enrich.contacts skipped: empty dataset (%s)", source_path.name)
         return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
 
-    contacts_cfg = (ctx.get("enrichment_config") or {}).get("contacts") or {}
+    contacts_cfg_raw = (ctx.get("enrichment_config") or {}).get("contacts") or {}
+    if hasattr(contacts_cfg_raw, "model_dump"):
+        contacts_cfg = dict(contacts_cfg_raw.model_dump())
+    elif hasattr(contacts_cfg_raw, "dict"):
+        contacts_cfg = dict(contacts_cfg_raw.dict())
+    elif isinstance(contacts_cfg_raw, Mapping):
+        contacts_cfg = dict(contacts_cfg_raw)
+    else:
+        contacts_cfg = dict(contacts_cfg_raw or {})
+
+    if isinstance(cfg, Mapping):
+        overrides = {}
+        for key in ("chunk_size", "max_workers"):
+            value = cfg.get(key)
+            if value is not None:
+                overrides[key] = value
+        if overrides:
+            contacts_cfg.update(overrides)
+
     df_out, summary = process_contacts(df_in, contacts_cfg)
 
     output_path = outdir / "contacts_enriched.parquet"

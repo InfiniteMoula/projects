@@ -3,52 +3,146 @@
 import json
 import time
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from utils import io
+from .validation import (
+    validate_email,
+    validate_linkedin_url,
+    validate_site_web,
+    validate_telephone,
+)
+
+
+def _apply_field_validation(
+    df: pd.DataFrame,
+    column: str,
+    validator,
+    *,
+    store_flag: str,
+    store_normalized: Optional[str] = None,
+    **kwargs,
+) -> pd.Series:
+    """Run validation for a dataframe column and store helper columns."""
+    bool_series = pd.Series(False, index=df.index, dtype="bool")
+    normalized_series = pd.Series(pd.NA, index=df.index, dtype="string")
+    if column not in df.columns:
+        df[store_flag] = bool_series
+        if store_normalized:
+            df[store_normalized] = normalized_series
+        return bool_series
+
+    values = df[column].astype("string").fillna("").str.strip()
+    results = []
+    normalized_values = []
+    for value in values:
+        if not value:
+            results.append(False)
+            normalized_values.append(pd.NA)
+            continue
+        outcome = validator(value, **kwargs)
+        results.append(outcome.is_valid)
+        normalized_values.append(outcome.normalized if outcome.normalized is not None else value)
+    bool_series = pd.Series(results, index=df.index, dtype="bool")
+    df[store_flag] = bool_series
+    if store_normalized:
+        df[store_normalized] = pd.Series(normalized_values, index=df.index, dtype="string")
+    return bool_series
 
 def _calculate_contactability(df: pd.DataFrame) -> pd.Series:
     """Calculate contactability score based on available contact information."""
     score = pd.Series(0.0, index=df.index, dtype="float64")
     
-    # Score components (each worth up to 0.25, total = 1.0)
-    # 1. Email availability and plausibility
+    # 1. Email availability and plausibility (weight 0.30)
     if "best_email" in df.columns:
-        # Handle PyArrow nullable types by converting to string first
-        email_series = df["best_email"].astype(str).fillna("").str.strip()
-        email_valid = email_series.str.len() > 0
+        email_series = df["best_email"].astype("string").fillna("").str.strip()
+        best_email_valid = email_series.ne("")
         if "email_plausible" in df.columns:
-            email_score = pd.to_numeric(df["email_plausible"], errors="coerce").fillna(0.0)
+            email_score = pd.to_numeric(df["email_plausible"], errors="coerce").fillna(0.0).clip(0.0, 1.0)
         else:
-            # Basic email format check if email_plausible not available
             email_score = email_series.str.contains(r"@.*\.", na=False).astype(float)
-        score += email_valid.astype(float) * email_score * 0.35
-    
-    # 2. Phone number availability and validity
+        contribution = best_email_valid.astype(float) * email_score * 0.30
+        score += contribution
+    else:
+        best_email_valid = pd.Series(False, index=df.index, dtype="bool")
+    df["best_email_valid"] = best_email_valid.astype("bool")
+
+    # 2. Normalized phone availability (weight 0.20)
     if "telephone_norm" in df.columns:
-        phone_series = df["telephone_norm"].astype(str).fillna("").str.strip()
-        phone_valid = phone_series.str.len() > 0
-        score += phone_valid.astype(float) * 0.25
-    
-    # 3. Website/domain availability
+        phone_series = df["telephone_norm"].astype("string").fillna("").str.strip()
+        telephone_norm_valid = phone_series.ne("")
+        score += telephone_norm_valid.astype(float) * 0.20
+    else:
+        telephone_norm_valid = pd.Series(False, index=df.index, dtype="bool")
+    df["telephone_norm_valid"] = telephone_norm_valid
+
+    # 3. Domain availability (weight 0.15)
     if "domain_root" in df.columns:
-        domain_series = df["domain_root"].astype(str).fillna("").str.strip()
-        domain_valid = domain_series.str.len() > 0
+        domain_series = df["domain_root"].astype("string").fillna("").str.strip()
+        domain_valid = domain_series.ne("")
         if "domain_valid" in df.columns:
-            domain_score = pd.to_numeric(df["domain_valid"], errors="coerce").fillna(0.0)
+            domain_score = pd.to_numeric(df["domain_valid"], errors="coerce").fillna(0.0).clip(0.0, 1.0)
         else:
-            domain_score = 1.0  # Assume valid if present
-        score += domain_valid.astype(float) * domain_score * 0.25
-    
-    # 4. Address completeness
+            domain_score = 1.0
+        score += domain_valid.astype(float) * domain_score * 0.15
+    else:
+        domain_valid = pd.Series(False, index=df.index, dtype="bool")
+    df["domain_root_valid"] = domain_valid
+
+    # 4. Address completeness (weight 0.10)
     if "adresse_complete" in df.columns:
-        address_series = df["adresse_complete"].astype(str).fillna("").str.strip()
-        address_valid = address_series.str.len() > 10  # At least some address info
-        score += address_valid.astype(float) * 0.15
-    
+        address_series = df["adresse_complete"].astype("string").fillna("").str.strip()
+        address_valid = address_series.str.len() > 10
+        score += address_valid.astype(float) * 0.10
+    else:
+        address_valid = pd.Series(False, index=df.index, dtype="bool")
+    df["adresse_complete_valid"] = address_valid
+
+    # 5. Official website validation (weight 0.10)
+    site_valid = _apply_field_validation(
+        df,
+        "site_web",
+        validate_site_web,
+        store_flag="site_web_valid",
+        store_normalized="site_web_normalized",
+    )
+    score += site_valid.astype(float) * 0.10
+
+    # 6. Generic email validation (weight 0.05)
+    email_valid = _apply_field_validation(
+        df,
+        "email",
+        validate_email,
+        store_flag="email_valid",
+        store_normalized="email_normalized",
+        check_mx=False,
+    )
+    score += email_valid.astype(float) * 0.05
+
+    # 7. Raw telephone validation (weight 0.05)
+    telephone_valid = _apply_field_validation(
+        df,
+        "telephone",
+        validate_telephone,
+        store_flag="telephone_valid",
+        store_normalized="telephone_e164",
+    )
+    score += telephone_valid.astype(float) * 0.05
+
+    # 8. LinkedIn company page validation (weight 0.05)
+    linkedin_valid = _apply_field_validation(
+        df,
+        "linkedin_url",
+        validate_linkedin_url,
+        store_flag="linkedin_url_valid",
+        store_normalized="linkedin_url_normalized",
+    )
+    score += linkedin_valid.astype(float) * 0.05
+
     return score.clip(0.0, 1.0)
 
 
