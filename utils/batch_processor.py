@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import psutil
 import threading
 
+from .adaptive_controller import AdaptiveController, AdaptiveState
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,7 +87,8 @@ class BatchProcessor:
         max_memory_mb: int = 4096,
         rate_limit_delay: float = 1.0,
         retry_failed: bool = True,
-        max_retries: int = 2
+        max_retries: int = 2,
+        adaptive_controller: Optional[AdaptiveController] = None,
     ):
         self.batch_size = batch_size
         self.max_concurrent = max_concurrent
@@ -93,10 +96,22 @@ class BatchProcessor:
         self.rate_limit_delay = rate_limit_delay
         self.retry_failed = retry_failed
         self.max_retries = max_retries
-        
+        self.adaptive_controller = adaptive_controller
+
+        self.current_batch_size = adaptive_controller.current_chunk_size if adaptive_controller else batch_size
+        self.current_max_concurrent = adaptive_controller.current_concurrency if adaptive_controller else max_concurrent
+
         self.stats = BatchStats()
         self.memory_monitor = MemoryMonitor(max_memory_mb)
-        
+
+    def _sync_adaptive_defaults(self) -> None:
+        if self.adaptive_controller:
+            self.current_batch_size = self.adaptive_controller.current_chunk_size
+            self.current_max_concurrent = self.adaptive_controller.current_concurrency
+        else:
+            self.current_batch_size = self.batch_size
+            self.current_max_concurrent = self.max_concurrent
+
     async def process_batches_async(
         self,
         df: pd.DataFrame,
@@ -116,55 +131,78 @@ class BatchProcessor:
             Results from each processed batch
         """
         logger.info(f"Starting batch processing: {len(df)} items in batches of {self.batch_size}")
-        
+
+        self._sync_adaptive_defaults()
+
         # Initialize stats
         self.stats = BatchStats()
         self.stats.total_items = len(df)
-        self.stats.total_batches = (len(df) + self.batch_size - 1) // self.batch_size
+        self.stats.total_batches = 0
         self.stats.start_time = time.time()
-        
+
         # Start memory monitoring
         self.memory_monitor.start_monitoring()
-        
+
         try:
-            # Create semaphore for concurrency control
-            semaphore = asyncio.Semaphore(self.max_concurrent)
-            
-            # Process batches with concurrency control
-            tasks = []
-            for batch_num in range(self.stats.total_batches):
-                start_idx = batch_num * self.batch_size
-                end_idx = min(start_idx + self.batch_size, len(df))
+            semaphore = asyncio.Semaphore(max(1, self.current_max_concurrent))
+            tasks: List[asyncio.Task] = []
+            batch_index = 0
+            start_idx = 0
+            chunk_started = time.time()
+
+            while start_idx < len(df):
+                if not tasks:
+                    chunk_started = time.time()
+
+                end_idx = min(start_idx + self.current_batch_size, len(df))
                 batch_df = df.iloc[start_idx:end_idx].copy()
-                
-                # Create async task for batch processing
+                self.stats.total_batches += 1
+
                 task = self._process_single_batch_async(
-                    batch_df, batch_num, processor_func, semaphore, *args, **kwargs
+                    batch_df,
+                    batch_index,
+                    self.stats.total_batches,
+                    processor_func,
+                    semaphore,
+                    *args,
+                    **kwargs,
                 )
                 tasks.append(task)
-                
-                # Process in chunks to avoid overwhelming memory
-                if len(tasks) >= self.max_concurrent or batch_num == self.stats.total_batches - 1:
-                    # Wait for current chunk to complete
+                batch_index += 1
+                start_idx = end_idx
+
+                if len(tasks) >= self.current_max_concurrent or start_idx >= len(df):
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
+
+                    failures = 0
+                    processed_items = 0
                     for result in results:
                         if isinstance(result, Exception):
                             logger.error(f"Batch processing error: {result}")
                             self.stats.failed_batches += 1
+                            failures += 1
                         else:
                             self.stats.processed_batches += 1
                             self.stats.processed_items += len(result)
+                            processed_items += len(result)
                             yield result
-                    
-                    # Clear completed tasks and force garbage collection
+
                     tasks.clear()
                     gc.collect()
-                    
-                    # Rate limiting between chunks
-                    if batch_num < self.stats.total_batches - 1:
+
+                    duration = max(time.time() - chunk_started, 1e-6)
+                    state = self._run_adaptive_cycle(
+                        failures=failures,
+                        total=len(results),
+                        processed_items=processed_items,
+                        duration=duration,
+                    )
+                    if state and state.concurrency_changed:
+                        semaphore = asyncio.Semaphore(max(1, self.current_max_concurrent))
+
+                    if start_idx < len(df):
                         await asyncio.sleep(self.rate_limit_delay)
-        
+
         finally:
             # Cleanup
             self.memory_monitor.stop_monitoring()
@@ -182,6 +220,7 @@ class BatchProcessor:
         self,
         batch_df: pd.DataFrame,
         batch_num: int,
+        total_batches: int,
         processor_func: Callable,
         semaphore: asyncio.Semaphore,
         *args,
@@ -196,13 +235,13 @@ class BatchProcessor:
             while retries <= self.max_retries:
                 try:
                     start_time = time.time()
-                    logger.debug(f"Processing batch {batch_num + 1}/{self.stats.total_batches} (size: {len(batch_df)})")
-                    
+                    logger.debug(f"Processing batch {batch_num + 1}/{total_batches} (size: {len(batch_df)})")
+
                     # Call the processor function
                     result = await processor_func(batch_df, *args, **kwargs)
-                    
+
                     processing_time = time.time() - start_time
-                    logger.debug(f"Batch {batch_num + 1} completed in {processing_time:.2f}s")
+                    logger.debug(f"Batch {batch_num + 1}/{total_batches} completed in {processing_time:.2f}s")
                     
                     return result
                     
@@ -242,58 +281,89 @@ class BatchProcessor:
             Combined results from all batches
         """
         logger.info(f"Starting sync batch processing: {len(df)} items in batches of {self.batch_size}")
-        
+
+        self._sync_adaptive_defaults()
+
         # Initialize stats
         self.stats = BatchStats()
         self.stats.total_items = len(df)
-        self.stats.total_batches = (len(df) + self.batch_size - 1) // self.batch_size
+        self.stats.total_batches = 0
         self.stats.start_time = time.time()
-        
+
         # Start memory monitoring
         self.memory_monitor.start_monitoring()
-        
+
         all_results = []
-        
+
         try:
-            with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
-                # Submit all batch tasks
-                future_to_batch = {}
-                
-                for batch_num in range(self.stats.total_batches):
-                    start_idx = batch_num * self.batch_size
-                    end_idx = min(start_idx + self.batch_size, len(df))
+            start_idx = 0
+            batch_index = 0
+
+            while start_idx < len(df):
+                chunk_start = time.time()
+                scheduled_batches: List[Tuple[pd.DataFrame, int, int]] = []
+
+                while (
+                    len(scheduled_batches) < max(1, self.current_max_concurrent)
+                    and start_idx < len(df)
+                ):
+                    end_idx = min(start_idx + self.current_batch_size, len(df))
                     batch_df = df.iloc[start_idx:end_idx].copy()
-                    
-                    future = executor.submit(
-                        self._process_single_batch_sync,
-                        batch_df, batch_num, processor_func, *args, **kwargs
-                    )
-                    future_to_batch[future] = batch_num
-                
-                # Collect results as they complete
-                for future in as_completed(future_to_batch):
-                    batch_num = future_to_batch[future]
-                    
-                    try:
-                        result = future.result()
-                        self.stats.processed_batches += 1
-                        self.stats.processed_items += len(result) if result else 0
-                        
-                        if result:
-                            all_results.extend(result)
-                            
-                        logger.debug(f"Batch {batch_num + 1} completed")
-                        
-                    except Exception as e:
-                        logger.error(f"Batch {batch_num + 1} failed: {e}")
-                        self.stats.failed_batches += 1
-                    
-                    # Memory cleanup after each batch
-                    gc.collect()
-                    
-                    # Rate limiting
+                    self.stats.total_batches += 1
+                    scheduled_batches.append((batch_df, batch_index, self.stats.total_batches))
+                    batch_index += 1
+                    start_idx = end_idx
+
+                failures = 0
+                processed_items = 0
+
+                with ThreadPoolExecutor(
+                    max_workers=max(1, min(self.current_max_concurrent, len(scheduled_batches)))
+                ) as executor:
+                    future_map = {
+                        executor.submit(
+                            self._process_single_batch_sync,
+                            batch_df,
+                            batch_num,
+                            total_hint,
+                            processor_func,
+                            *args,
+                            **kwargs,
+                        ): batch_num
+                        for batch_df, batch_num, total_hint in scheduled_batches
+                    }
+
+                    for future in as_completed(future_map):
+                        batch_num = future_map[future]
+                        try:
+                            result = future.result()
+                            self.stats.processed_batches += 1
+                            if result:
+                                self.stats.processed_items += len(result)
+                                processed_items += len(result)
+                                all_results.extend(result)
+
+                            logger.debug(f"Batch {batch_num + 1} completed")
+
+                        except Exception as e:
+                            logger.error(f"Batch {batch_num + 1} failed: {e}")
+                            self.stats.failed_batches += 1
+                            failures += 1
+
+                gc.collect()
+                state = self._run_adaptive_cycle(
+                    failures=failures,
+                    total=len(scheduled_batches),
+                    processed_items=processed_items,
+                    duration=max(time.time() - chunk_start, 1e-6),
+                )
+                if state and state.concurrency_changed:
+                    # Ensure future iterations honour the new concurrency
+                    self.current_max_concurrent = state.concurrency
+
+                if start_idx < len(df):
                     time.sleep(self.rate_limit_delay)
-        
+
         finally:
             # Cleanup
             self.memory_monitor.stop_monitoring()
@@ -313,6 +383,7 @@ class BatchProcessor:
         self,
         batch_df: pd.DataFrame,
         batch_num: int,
+        total_batches: int,
         processor_func: Callable,
         *args,
         **kwargs
@@ -325,13 +396,13 @@ class BatchProcessor:
         while retries <= self.max_retries:
             try:
                 start_time = time.time()
-                logger.debug(f"Processing batch {batch_num + 1}/{self.stats.total_batches} (size: {len(batch_df)})")
-                
+                logger.debug(f"Processing batch {batch_num + 1}/{total_batches} (size: {len(batch_df)})")
+
                 # Call the processor function
                 result = processor_func(batch_df, *args, **kwargs)
-                
+
                 processing_time = time.time() - start_time
-                logger.debug(f"Batch {batch_num + 1} completed in {processing_time:.2f}s")
+                logger.debug(f"Batch {batch_num + 1}/{total_batches} completed in {processing_time:.2f}s")
                 
                 return result
                 
@@ -349,9 +420,48 @@ class BatchProcessor:
         # If all retries failed, return empty result
         if last_exception:
             raise last_exception
-        
+
         return []
-    
+
+    def _run_adaptive_cycle(
+        self,
+        *,
+        failures: int,
+        total: int,
+        processed_items: int,
+        duration: float,
+    ) -> Optional[AdaptiveState]:
+        if not self.adaptive_controller or total <= 0:
+            return None
+
+        error_rate = failures / total if total > 0 else 0.0
+        req_per_min = None
+        if processed_items > 0 and duration > 0:
+            req_per_min = (processed_items / duration) * 60.0
+
+        ram_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+        state = self.adaptive_controller.observe(
+            error_rate=error_rate,
+            req_per_min=req_per_min,
+            ram_used=ram_gb,
+        )
+        self._apply_adaptive_state(state)
+        return state
+
+    def _apply_adaptive_state(self, state: Optional[AdaptiveState]) -> None:
+        if not state:
+            return
+
+        if state.concurrency != self.current_max_concurrent:
+            self.current_max_concurrent = state.concurrency
+            if state.concurrency_changed:
+                logger.info("Adaptive controller set max_concurrent=%s", state.concurrency)
+
+        if state.chunk_size != self.current_batch_size:
+            self.current_batch_size = state.chunk_size
+            if state.chunk_size_changed:
+                logger.info("Adaptive controller set batch_size=%s", state.chunk_size)
+
     def get_stats(self) -> Dict[str, Any]:
         """Get processing statistics."""
         return {
@@ -371,7 +481,8 @@ class BatchProcessor:
 def create_batch_processor(
     batch_size: int = 50,
     max_concurrent: int = 3,
-    config: Optional[Dict] = None
+    config: Optional[Dict] = None,
+    adaptive_controller: Optional[AdaptiveController] = None,
 ) -> BatchProcessor:
     """
     Factory function to create a configured BatchProcessor.
@@ -403,7 +514,8 @@ def create_batch_processor(
         max_memory_mb=max_memory_mb,
         rate_limit_delay=rate_limit_delay,
         retry_failed=retry_failed,
-        max_retries=max_retries
+        max_retries=max_retries,
+        adaptive_controller=adaptive_controller,
     )
 
 

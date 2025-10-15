@@ -97,3 +97,11 @@ linkedin:
     delay_base: 1.0
     cache_dir: ".cache/http"
     cache_ttl_days: 7
+
+adaptive:
+  enabled: true
+  max_ram_gb: 6
+  min_concurrency: 10
+  max_concurrency: 60
+  min_chunk: 300
+  max_chunk: 1200
