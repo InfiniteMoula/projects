@@ -201,6 +201,14 @@ class LinkedinConfig(BaseModel):
         return [str(item).strip() for item in value if str(item).strip()]
 
 
+class AiConfig(BaseModel):
+    """AI enrichment feature flags."""
+
+    model_config = ConfigDict(extra="allow")
+
+    fallback_extraction: bool = False
+
+
 class EnrichmentConfig(BaseModel):
     """Root configuration for enrichment steps."""
 
@@ -212,6 +220,7 @@ class EnrichmentConfig(BaseModel):
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     linkedin: LinkedinConfig = Field(default_factory=LinkedinConfig)
+    ai: AiConfig = Field(default_factory=AiConfig)
 
 
 @lru_cache(maxsize=1)
@@ -240,6 +249,7 @@ def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> Enric
 
 
 __all__ = [
+    "AiConfig",
     "ContactsConfig",
     "DomainsConfig",
     "EnrichmentConfig",

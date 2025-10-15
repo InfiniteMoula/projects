@@ -16,6 +16,8 @@ from bs4 import BeautifulSoup
 from phonenumbers import PhoneNumberType
 from phonenumbers.phonenumberutil import NumberParseException
 
+from ai.extract_llm import extract_contacts as extract_contacts_llm
+
 try:
     import tldextract
 except ImportError:  # pragma: no cover - defensive
@@ -289,6 +291,17 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
     max_pages = int(cfg.get("max_pages_per_site", DEFAULT_MAX_PAGES))
     sitemap_limit = int(cfg.get("sitemap_limit", DEFAULT_SITEMAP_LIMIT))
 
+    ai_cfg_raw = cfg.get("ai") if isinstance(cfg, Mapping) else None
+    if hasattr(ai_cfg_raw, "model_dump"):
+        ai_cfg = dict(ai_cfg_raw.model_dump())
+    elif hasattr(ai_cfg_raw, "dict"):
+        ai_cfg = dict(ai_cfg_raw.dict())
+    elif isinstance(ai_cfg_raw, Mapping):
+        ai_cfg = dict(ai_cfg_raw)
+    else:
+        ai_cfg = {}
+    llm_fallback_enabled = bool(ai_cfg.get("fallback_extraction"))
+
     if not use_robots:
         http_cfg["respect_robots"] = False
 
@@ -366,12 +379,33 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                     continue
                 total_pages += 1
                 page_type = _classify_page(url, base_url)
-                emails, phones, linkedins = _extract_contacts_from_html(
-                    url=url,
-                    html=body,
-                    company_domain=company_domain,
-                    norm_city=norm_city,
-                )
+                fallback_emails: List[Tuple[str, bool, bool]] = []
+                fallback_phones: List[Tuple[str, NumberType, bool]] = []
+                fallback_linkedins: Set[str] = set()
+                try:
+                    emails, phones, linkedins = _extract_contacts_from_html(
+                        url=url,
+                        html=body,
+                        company_domain=company_domain,
+                        norm_city=norm_city,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    LOGGER.warning("Failed to parse contacts from %s: %s", url, exc)
+                    emails, phones, linkedins = [], [], set()
+                    if llm_fallback_enabled:
+                        fallback_emails, fallback_phones, fallback_linkedins = _extract_contacts_with_llm(
+                            html=body,
+                            url=url,
+                            base_url=base_url,
+                            page_type=page_type,
+                            company_domain=company_domain,
+                            norm_city=norm_city,
+                            city_code=city_code,
+                            ai_cfg=ai_cfg,
+                        )
+                emails.extend(fallback_emails)
+                phones.extend(fallback_phones)
+                linkedins.update(fallback_linkedins)
                 linkedin_links.update(linkedins)
 
                 for email, on_domain, is_nominative in emails:
@@ -584,6 +618,129 @@ def _extract_contacts_from_html(
     return emails, phones, linkedins
 
 
+def _extract_contacts_with_llm(
+    *,
+    html: str,
+    url: str,
+    base_url: str,
+    page_type: str,
+    company_domain: str,
+    norm_city: str,
+    city_code: str,
+    ai_cfg: Mapping[str, Any],
+) -> Tuple[List[Tuple[str, bool, bool]], List[Tuple[str, NumberType, bool]], Set[str]]:
+    hints: Dict[str, Any] = {
+        "url": url,
+        "base_url": base_url,
+        "page_type": page_type,
+        "company_domain": company_domain,
+        "city": norm_city,
+        "city_code": city_code,
+    }
+    if ai_cfg:
+        hints["config"] = dict(ai_cfg)
+    try:
+        payload = extract_contacts_llm(html or "", hints)
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning("LLM fallback extraction failed for %s: %s", url, exc)
+        return [], [], set()
+    return _normalize_llm_payload(payload, company_domain, norm_city)
+
+
+def _iter_clean_strings(value: object) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        text = str(value).strip()
+        return [text] if text else []
+    if isinstance(value, Mapping):
+        items: List[str] = []
+        for candidate in value.values():
+            if candidate is None:
+                continue
+            text = str(candidate).strip()
+            if text:
+                items.append(text)
+        return items
+    if isinstance(value, Iterable):
+        items = []
+        for candidate in value:
+            if candidate is None:
+                continue
+            text = str(candidate).strip()
+            if text:
+                items.append(text)
+        return items
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _normalize_llm_payload(
+    payload: Mapping[str, Any],
+    company_domain: str,
+    norm_city: str,
+) -> Tuple[List[Tuple[str, bool, bool]], List[Tuple[str, NumberType, bool]], Set[str]]:
+    if not isinstance(payload, Mapping):
+        return [], [], set()
+
+    emails: List[Tuple[str, bool, bool]] = []
+    seen_emails: Set[str] = set()
+    for raw_email in _iter_clean_strings(payload.get("emails")):
+        cleaned = _sanitize_email(raw_email)
+        if not cleaned or cleaned in seen_emails or not _is_probable_email(cleaned):
+            continue
+        local, _, domain = cleaned.partition("@")
+        on_domain = bool(company_domain and domain.endswith(company_domain))
+        is_nominative = _is_nominative_local(local)
+        emails.append((cleaned, on_domain, is_nominative))
+        seen_emails.add(cleaned)
+
+    phones: List[Tuple[str, NumberType, bool]] = []
+    seen_phones: Set[str] = set()
+    for raw_phone in _iter_clean_strings(payload.get("phones")):
+        normalized = _normalize_llm_phone(raw_phone, norm_city)
+        if not normalized:
+            continue
+        phone_value, phone_type, city_match = normalized
+        if phone_value in seen_phones:
+            continue
+        phones.append((phone_value, phone_type, city_match))
+        seen_phones.add(phone_value)
+
+    linkedin_links: Set[str] = set()
+    for raw_linkedin in _iter_clean_strings(payload.get("linkedin")):
+        match = LINKEDIN_PATTERN.search(raw_linkedin)
+        if match:
+            linkedin_links.add(match.group(0))
+
+    return emails, phones, linkedin_links
+
+
+def _normalize_llm_phone(value: str, norm_city: str) -> Optional[Tuple[str, NumberType, bool]]:
+    if not value:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return None
+    try:
+        parsed = phonenumbers.parse(text, "FR")
+    except NumberParseException:
+        digits = re.sub(r"[^0-9+]+", "", text)
+        if not digits:
+            return None
+        city_match = bool(norm_city and norm_city in _normalize_text(text))
+        return digits, NumberType.UNKNOWN, city_match
+    if not phonenumbers.is_valid_number(parsed):
+        digits = re.sub(r"[^0-9+]+", "", text)
+        if digits:
+            city_match = bool(norm_city and norm_city in _normalize_text(text))
+            return digits, NumberType.UNKNOWN, city_match
+        return None
+    formatted = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+    city_match = bool(norm_city and norm_city in _normalize_text(text))
+    return formatted, phonenumbers.number_type(parsed), city_match
+
+
 def _deobfuscate(text: str) -> str:
     result = text
     for pattern, replacement in EMAIL_OBFUSCATIONS:
@@ -759,7 +916,8 @@ def run(cfg: Dict, ctx: Dict) -> Dict[str, object]:
             logger.info("enrich.contacts skipped: empty dataset (%s)", source_path.name)
         return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
 
-    contacts_cfg_raw = (ctx.get("enrichment_config") or {}).get("contacts") or {}
+    enrichment_cfg = ctx.get("enrichment_config") or {}
+    contacts_cfg_raw = enrichment_cfg.get("contacts") or {}
     if hasattr(contacts_cfg_raw, "model_dump"):
         contacts_cfg = dict(contacts_cfg_raw.model_dump())
     elif hasattr(contacts_cfg_raw, "dict"):
@@ -768,6 +926,18 @@ def run(cfg: Dict, ctx: Dict) -> Dict[str, object]:
         contacts_cfg = dict(contacts_cfg_raw)
     else:
         contacts_cfg = dict(contacts_cfg_raw or {})
+
+    ai_cfg_raw = enrichment_cfg.get("ai") or {}
+    if hasattr(ai_cfg_raw, "model_dump"):
+        ai_cfg = dict(ai_cfg_raw.model_dump())
+    elif hasattr(ai_cfg_raw, "dict"):
+        ai_cfg = dict(ai_cfg_raw.dict())
+    elif isinstance(ai_cfg_raw, Mapping):
+        ai_cfg = dict(ai_cfg_raw)
+    else:
+        ai_cfg = dict(ai_cfg_raw or {})
+    if ai_cfg and "ai" not in contacts_cfg:
+        contacts_cfg["ai"] = ai_cfg
 
     if isinstance(cfg, Mapping):
         overrides = {}

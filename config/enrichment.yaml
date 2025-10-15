@@ -97,3 +97,7 @@ linkedin:
     delay_base: 1.0
     cache_dir: ".cache/http"
     cache_ttl_days: 7
+
+ai:
+  # Enable fallback extraction via the LLM stub when parsing fails.
+  fallback_extraction: false
