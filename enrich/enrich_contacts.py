@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - defensive
 
 from net.http_client import HttpClient
 from net.http_client import RequestLimiter
+from utils.email_validation import has_mx_record
 from utils.scoring import score_email, score_phone
 from net import robots, sitemap as sitemap_utils
 
@@ -264,6 +265,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
         http_cfg = dict(http_cfg_raw or {})
     use_sitemaps = bool(cfg.get("use_sitemap", True))
     use_robots = bool(cfg.get("use_robots", True))
+    validate_mx = bool(cfg.get("validate_mx", False))
     page_paths = tuple(cfg.get("paths", DEFAULT_PATHS))
     max_pages = int(cfg.get("max_pages_per_site", DEFAULT_MAX_PAGES))
     sitemap_limit = int(cfg.get("sitemap_limit", DEFAULT_SITEMAP_LIMIT))
@@ -296,6 +298,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
             df_out[col] = pd.NA
 
     try:
+        mx_cache: Dict[str, bool] = {}
         for row in df_out.itertuples(index=True):
             idx = row.Index
             site_raw = _safe_str(getattr(row, "site_web", ""))
@@ -361,6 +364,15 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                         on_company_domain=on_domain,
                     )
                     candidate.score = score_email(candidate.value, company_domain)
+                    if validate_mx:
+                        domain = email.rsplit("@", 1)[-1].strip().lower() if "@" in email else ""
+                        if domain:
+                            has_mx = mx_cache.get(domain)
+                            if has_mx is None:
+                                has_mx = has_mx_record(domain)
+                                mx_cache[domain] = has_mx
+                            if not has_mx:
+                                candidate.score = max(0.0, candidate.score - 0.4)
                     email_candidates.append(candidate)
 
                 for phone_value, number_type, city_match in phones:
