@@ -1,5 +1,8 @@
+import pytest
+
 from enrich.enrich_contacts import (
     NumberType,
+    _apply_mx_penalty,
     _extract_emails,
     _extract_phones,
     _normalize_text,
@@ -38,3 +41,39 @@ def test_score_email_prefers_nominative_contact():
     score_generic = score_email("contact@example.com", "example.com")
 
     assert score_on_domain > score_generic
+
+
+def test_apply_mx_penalty_disabled(monkeypatch):
+    called = False
+
+    def _fake_lookup(domain: str) -> bool:
+        nonlocal called
+        called = True
+        return False
+
+    monkeypatch.setattr("enrich.enrich_contacts.has_mx_record", _fake_lookup)
+
+    score = _apply_mx_penalty("user@example.com", 0.8, False)
+    assert score == pytest.approx(0.8)
+    assert called is False
+
+
+def test_apply_mx_penalty_applies_malus(monkeypatch):
+    monkeypatch.setattr("enrich.enrich_contacts.has_mx_record", lambda _: False)
+
+    score = _apply_mx_penalty("user@example.com", 0.5, True)
+    assert score == pytest.approx(0.1)
+
+
+def test_apply_mx_penalty_no_malus(monkeypatch):
+    monkeypatch.setattr("enrich.enrich_contacts.has_mx_record", lambda _: True)
+
+    score = _apply_mx_penalty("user@example.com", 0.3, True)
+    assert score == pytest.approx(0.3)
+
+
+def test_apply_mx_penalty_clamps_floor(monkeypatch):
+    monkeypatch.setattr("enrich.enrich_contacts.has_mx_record", lambda _: False)
+
+    score = _apply_mx_penalty("user@example.com", 0.2, True)
+    assert score == 0.0

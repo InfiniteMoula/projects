@@ -69,6 +69,7 @@ GENERIC_EMAIL_PREFIXES = {
     "no-reply",
     "bonjour",
 }
+EMAIL_MX_PENALTY = 0.4
 LINKEDIN_PATTERN = re.compile(
     r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/(?:company|in)/[A-Za-z0-9_\-/%]+",
     re.IGNORECASE,
@@ -142,6 +143,24 @@ def _resolve_max_workers(cfg: Mapping[str, Any]) -> int:
     except (TypeError, ValueError):
         return DEFAULT_MAX_WORKERS
     return workers if workers > 0 else DEFAULT_MAX_WORKERS
+
+
+def _apply_mx_penalty(email: str, score: float, validate_mx: bool) -> float:
+    """Apply an MX validation penalty when enabled and the domain lacks records."""
+
+    if not validate_mx or score <= 0.0:
+        return score
+
+    if "@" not in email:
+        return score
+
+    domain = email.rsplit("@", 1)[-1].strip().lower()
+    if not domain:
+        return score
+
+    if not has_mx_record(domain):
+        return max(0.0, score - EMAIL_MX_PENALTY)
+    return score
 
 
 def _prepare_http_cfg(cfg: Mapping[str, Any]) -> Dict[str, Any]:
@@ -298,7 +317,6 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
             df_out[col] = pd.NA
 
     try:
-        mx_cache: Dict[str, bool] = {}
         for row in df_out.itertuples(index=True):
             idx = row.Index
             site_raw = _safe_str(getattr(row, "site_web", ""))
@@ -364,15 +382,9 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                         on_company_domain=on_domain,
                     )
                     candidate.score = score_email(candidate.value, company_domain)
-                    if validate_mx:
-                        domain = email.rsplit("@", 1)[-1].strip().lower() if "@" in email else ""
-                        if domain:
-                            has_mx = mx_cache.get(domain)
-                            if has_mx is None:
-                                has_mx = has_mx_record(domain)
-                                mx_cache[domain] = has_mx
-                            if not has_mx:
-                                candidate.score = max(0.0, candidate.score - 0.4)
+                    candidate.score = _apply_mx_penalty(
+                        candidate.value, candidate.score, validate_mx
+                    )
                     email_candidates.append(candidate)
 
                 for phone_value, number_type, city_match in phones:
