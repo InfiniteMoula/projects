@@ -15,6 +15,7 @@ import tldextract
 
 from net.http_client import HttpClient
 from serp.providers import BingProvider, DuckDuckGoProvider, Result, SerpProvider
+from utils.scoring import score_domain
 
 LOGGER = logging.getLogger("enrich.site_web_search")
 
@@ -60,6 +61,7 @@ class _Candidate:
     url: str
     source: str
     score: float
+    title: str = ""
 
 
 def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
@@ -170,14 +172,16 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
             duration = time.perf_counter() - start
 
             if best_candidate and best_candidate.score >= heuristic_threshold:
+                site_score = score_domain(best_candidate.url, denom_raw, city_raw, best_candidate.title)
                 df_out.at[idx, "site_web"] = best_candidate.url
                 df_out.at[idx, "site_web_source"] = best_candidate.source
-                df_out.at[idx, "site_web_score"] = round(best_candidate.score, 3)
+                df_out.at[idx, "site_web_score"] = site_score
                 LOGGER.info(
-                    "site search denomination=%s url=%s score=%.3f source=%s duration=%.3fs",
+                    "site search denomination=%s url=%s selection_score=%.3f final_score=%.3f source=%s duration=%.3fs",
                     denom_raw,
                     best_candidate.url,
                     best_candidate.score,
+                    site_score,
                     best_candidate.source,
                     duration,
                 )
@@ -251,7 +255,8 @@ def _pick_best_result(results: Iterable[Result], norm_name: str, norm_city: str)
         score = _score_serp_result(result, norm_name, norm_city)
         if score <= 0:
             continue
-        candidate = _Candidate(url=result.url, source=f"SERP:{result.rank}", score=score)
+        combined_title = " ".join(part for part in (result.title, result.snippet) if part)
+        candidate = _Candidate(url=result.url, source=f"SERP:{result.rank}", score=score, title=combined_title)
         if not best_candidate or candidate.score > best_candidate.score:
             best_candidate = candidate
     return best_candidate
@@ -330,7 +335,7 @@ def _heuristic_lookup(
             if score <= 0:
                 continue
             source = f"heuristic:{tld}"
-            return _Candidate(url=final_url, source=source, score=score)
+            return _Candidate(url=final_url, source=source, score=score, title=title_text)
     return None
 
 

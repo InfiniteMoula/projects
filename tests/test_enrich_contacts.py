@@ -1,11 +1,10 @@
 from enrich.enrich_contacts import (
-    EmailCandidate,
     NumberType,
     _extract_emails,
     _extract_phones,
     _normalize_text,
-    _score_email,
 )
+from utils.scoring import score_email
 
 
 def test_extract_emails_deobfuscates_and_marks_domain():
@@ -35,22 +34,7 @@ def test_extract_phones_returns_e164_and_city_match():
 
 
 def test_score_email_prefers_nominative_contact():
-    on_domain = EmailCandidate(
-        value="jean.dupont@example.com",
-        source_url="https://example.com/contact",
-        page_type="contact",
-        is_nominative=True,
-        on_company_domain=True,
-    )
-    generic = EmailCandidate(
-        value="contact@example.com",
-        source_url="https://example.com/",
-        page_type="home",
-        is_nominative=False,
-        on_company_domain=True,
-    )
-
-    score_on_domain = _score_email(on_domain, "example.com", "contact")
-    score_generic = _score_email(generic, "example.com", "home")
+    score_on_domain = score_email("jean.dupont@example.com", "example.com")
+    score_generic = score_email("contact@example.com", "example.com")
 
     assert score_on_domain > score_generic

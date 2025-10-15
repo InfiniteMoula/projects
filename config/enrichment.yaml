@@ -62,6 +62,10 @@ contacts:
   max_pages_per_site: 8
   # Maximum number of sitemap entries inspected when discovering new pages.
   sitemap_limit: 5
+  # Enable sitemap discovery for candidate pages.
+  use_sitemap: true
+  # Enforce robots.txt directives when discovering new pages.
+  use_robots: true
 
   # Email domains considered generic and therefore deprioritised.
   email_generic_domains: ["gmail.com", "orange.fr", "wanadoo.fr"]

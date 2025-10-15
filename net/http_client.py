@@ -357,6 +357,10 @@ class HttpClient:
             ua_list.append("Mozilla/5.0 (compatible; HttpClient/1.0; +https://example.com/bot)")
         return ua_list
 
+    def pick_user_agent(self) -> str:
+        """Return a user agent string suitable for HTTP requests."""
+        return self._choose_user_agent()
+
     def _choose_user_agent(self) -> str:
         return random.choice(self._user_agents)
 

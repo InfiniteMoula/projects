@@ -158,6 +158,8 @@ class ContactsConfig(BaseModel):
     paths: List[str] = Field(default_factory=lambda: DEFAULT_CONTACT_PATHS.copy(), alias="pages_to_scan")
     max_pages_per_site: int = Field(default=8, ge=1)
     sitemap_limit: int = Field(default=5, ge=0)
+    use_sitemap: bool = True
+    use_robots: bool = True
     email_generic_domains: List[str] = Field(default_factory=list)
     email_generic_prefixes: List[str] = Field(default_factory=lambda: DEFAULT_EMAIL_GENERIC_PREFIXES.copy())
 

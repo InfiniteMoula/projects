@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin, urlparse
-from xml.etree import ElementTree
-
 import pandas as pd
 import phonenumbers
 from bs4 import BeautifulSoup
@@ -23,6 +21,8 @@ except ImportError:  # pragma: no cover - defensive
     tldextract = None
 
 from net.http_client import HttpClient
+from utils.scoring import score_email, score_phone
+from net import robots, sitemap as sitemap_utils
 
 LOGGER = logging.getLogger("enrich.enrich_contacts")
 NumberType = PhoneNumberType
@@ -90,19 +90,6 @@ DEFAULT_PATHS = (
     "/politique_confidentialite",
     "/rgpd",
 )
-SITEMAP_KEYWORDS = (
-    "contact",
-    "mention",
-    "legal",
-    "privacy",
-    "confidential",
-    "about",
-    "nous",
-    "rgpd",
-    "coord",
-    "contactez",
-)
-
 DEFAULT_MAX_PAGES = 8
 DEFAULT_SITEMAP_LIMIT = 5
 DEFAULT_TIMEOUT = 8.0
@@ -153,12 +140,30 @@ def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.Da
             "avg_time": 0.0,
         }
 
-    http_cfg = cfg.get("http_client", {"timeout": DEFAULT_TIMEOUT})
+    http_cfg_raw = cfg.get("http_client", {"timeout": DEFAULT_TIMEOUT})
+    if hasattr(http_cfg_raw, "model_dump"):
+        http_cfg = dict(http_cfg_raw.model_dump())
+    elif hasattr(http_cfg_raw, "dict"):
+        http_cfg = dict(http_cfg_raw.dict())
+    elif isinstance(http_cfg_raw, Mapping):
+        http_cfg = dict(http_cfg_raw)
+    else:
+        http_cfg = dict(http_cfg_raw or {})
+    use_sitemaps = bool(cfg.get("use_sitemap", True))
+    use_robots = bool(cfg.get("use_robots", True))
     page_paths = tuple(cfg.get("paths", DEFAULT_PATHS))
     max_pages = int(cfg.get("max_pages_per_site", DEFAULT_MAX_PAGES))
     sitemap_limit = int(cfg.get("sitemap_limit", DEFAULT_SITEMAP_LIMIT))
 
+    if not use_robots:
+        http_cfg["respect_robots"] = False
+
     http_client = HttpClient(http_cfg)
+    robots_user_agent = http_cfg.get("default_headers", {}).get("User-Agent")
+    if not robots_user_agent:
+        robots_user_agent = http_client.pick_user_agent()
+    if use_robots or use_sitemaps:
+        robots.configure(http_client, cache_ttl=http_cfg.get("robots_cache_ttl"))
     total_sites = 0
     total_emails = 0
     total_phones = 0
@@ -194,6 +199,11 @@ def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.Da
             except ValueError:
                 company_domain = ""
             norm_city = _normalize_text(_safe_str(getattr(row, "ville", "")))
+            city_code = (
+                _safe_str(getattr(row, "departement", ""))
+                or _safe_str(getattr(row, "code_postal", ""))
+                or _safe_str(getattr(row, "cp", ""))
+            )
 
             candidate_urls = _discover_candidate_urls(
                 http_client,
@@ -201,6 +211,9 @@ def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.Da
                 page_paths=page_paths,
                 sitemap_limit=sitemap_limit,
                 max_pages=max_pages,
+                use_sitemaps=use_sitemaps,
+                use_robots=use_robots,
+                robots_user_agent=robots_user_agent if use_robots else None,
             )
             if not candidate_urls:
                 continue
@@ -234,7 +247,7 @@ def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.Da
                         is_nominative=is_nominative,
                         on_company_domain=on_domain,
                     )
-                    candidate.score = _score_email(candidate, company_domain, page_type)
+                    candidate.score = score_email(candidate.value, company_domain)
                     email_candidates.append(candidate)
 
                 for phone_value, number_type, city_match in phones:
@@ -245,7 +258,7 @@ def process_contacts(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tuple[pd.Da
                         number_type=number_type,
                         city_match=city_match,
                     )
-                    candidate.score = _score_phone(candidate)
+                    candidate.score = score_phone(candidate.value, city_code)
                     phone_candidates.append(candidate)
 
             best_email = _select_best_email(email_candidates)
@@ -332,77 +345,52 @@ def _discover_candidate_urls(
     page_paths: Sequence[str],
     sitemap_limit: int,
     max_pages: int,
+    use_sitemaps: bool,
+    use_robots: bool,
+    robots_user_agent: Optional[str],
 ) -> List[str]:
     parsed = urlparse(base_url)
     root = f"{parsed.scheme}://{parsed.netloc}"
     urls: List[str] = []
     seen: Set[str] = set()
 
-    def add_url(path_or_url: str) -> None:
+    def is_allowed(target: str) -> bool:
+        if not use_robots or not robots_user_agent:
+            return True
+        try:
+            return robots.is_allowed(target, robots_user_agent)
+        except Exception:  # pragma: no cover - defensive
+            return True
+
+    def add_url(path_or_url: str) -> bool:
         if len(urls) >= max_pages:
-            return
+            return False
         target = urljoin(root + "/", path_or_url)
         if urlparse(target).netloc != parsed.netloc:
-            return
-        if target not in seen:
-            seen.add(target)
-            urls.append(target)
+            return False
+        if target in seen:
+            return False
+        if not is_allowed(target):
+            return False
+        seen.add(target)
+        urls.append(target)
+        return True
 
     add_url(base_url)
     for path in page_paths:
         add_url(path)
 
-    for sitemap_url in _discover_sitemaps(http, root):
-        try:
-            response = http.get(sitemap_url)
-        except Exception:  # pragma: no cover - defensive
-            continue
-        if response.status_code != 200 or not response.text:
-            continue
-        for link in _extract_sitemap_links(response.text, sitemap_limit):
-            add_url(link)
+    if use_sitemaps and sitemap_limit != 0:
+        sitemap_candidates = sitemap_utils.discover_sitemap_urls(base_url, http)
+        limit = sitemap_limit if sitemap_limit > 0 else None
+        added = 0
+        for link in sitemap_candidates:
+            if limit is not None and added >= limit:
+                break
+            if add_url(link):
+                added += 1
 
     return urls
-
-
-def _discover_sitemaps(http: HttpClient, root: str) -> Set[str]:
-    parsed = urlparse(root)
-    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    sitemaps: Set[str] = set()
-
-    try:
-        robots_resp = http.get(robots_url)
-    except Exception:  # pragma: no cover - defensive
-        robots_resp = None
-
-    if robots_resp and robots_resp.status_code == 200 and robots_resp.text:
-        for line in robots_resp.text.splitlines():
-            if line.lower().startswith("sitemap:"):
-                sitemap_url = line.split(":", 1)[1].strip()
-                if sitemap_url:
-                    sitemaps.add(sitemap_url)
-
-    default_sitemap = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
-    sitemaps.add(default_sitemap)
-    return sitemaps
-
-
-def _extract_sitemap_links(xml_text: str, limit: int) -> List[str]:
-    links: List[str] = []
-    try:
-        root = ElementTree.fromstring(xml_text)
-    except ElementTree.ParseError:
-        return links
-
-    for loc in root.iter("{*}loc"):
-        if not loc.text:
-            continue
-        href = loc.text.strip()
-        if any(keyword in href.lower() for keyword in SITEMAP_KEYWORDS):
-            links.append(href)
-        if len(links) >= limit:
-            break
-    return links
 
 
 def _fetch_pages(http: HttpClient, urls: Sequence[str]) -> Dict[str, Tuple[int, str]]:
@@ -462,7 +450,10 @@ def _deobfuscate(text: str) -> str:
 
 def _extract_emails(text: str, company_domain: str) -> List[Tuple[str, bool, bool]]:
     candidates: Set[str] = set()
-    for match in EMAIL_REGEX.finditer(text):
+    normalized_text = text
+    for pattern, replacement in EMAIL_OBFUSCATIONS:
+        normalized_text = re.sub(pattern, replacement, normalized_text, flags=re.IGNORECASE)
+    for match in EMAIL_REGEX.finditer(normalized_text):
         email = match.group(1).strip().lower()
         cleaned = _sanitize_email(email)
         if not _is_probable_email(cleaned):
@@ -479,10 +470,16 @@ def _extract_emails(text: str, company_domain: str) -> List[Tuple[str, bool, boo
 
 
 def _sanitize_email(email: str) -> str:
-    email = email.strip(".,;:<>[](){} ").replace("..", ".")
-    email = re.sub(r"\s*@\s*", "@", email)
-    email = re.sub(r"\s*\.\s*", ".", email)
-    return email.lower()
+    if not email:
+        return ""
+    cleaned = email
+    for pattern, replacement in EMAIL_OBFUSCATIONS:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip(".,;:<>[](){} ").replace("..", ".")
+    cleaned = re.sub(r"\s*@\s*", "@", cleaned)
+    cleaned = re.sub(r"\s*\.\s*", ".", cleaned)
+    cleaned = re.sub(r"\s+", "", cleaned)
+    return cleaned.lower()
 
 
 def _is_probable_email(email: str) -> bool:
@@ -532,50 +529,6 @@ def _extract_phones(text: str, norm_city: str) -> List[Tuple[str, NumberType, bo
     return [(phone, meta[0], meta[1]) for phone, meta in phones.items()]
 
 
-def _score_email(candidate: EmailCandidate, company_domain: str, page_type: str) -> float:
-    local, _, domain = candidate.value.partition("@")
-    score = 0.2
-    similarity = 0.0
-    if company_domain:
-        try:
-            from rapidfuzz import fuzz
-
-            similarity = fuzz.partial_ratio(company_domain, domain) / 100.0
-        except Exception:
-            similarity = 0.0
-    score += 0.2 * similarity
-    if candidate.on_company_domain:
-        score += 0.4
-    elif company_domain and domain.split(".")[-1] == company_domain.split(".")[-1]:
-        score += 0.2
-    if candidate.is_nominative and local not in GENERIC_EMAIL_PREFIXES:
-        score += 0.2
-    else:
-        score += 0.05
-    if page_type == "contact":
-        score += 0.2
-    elif page_type in {"legal", "privacy", "about"}:
-        score += 0.1
-    return min(score, 1.0)
-
-
-def _score_phone(candidate: PhoneCandidate) -> float:
-    score = 0.2
-    if candidate.number_type == NumberType.FIXED_LINE:
-        score += 0.4
-    elif candidate.number_type == NumberType.MOBILE:
-        score += 0.3
-    else:
-        score += 0.1
-    if candidate.page_type == "contact":
-        score += 0.2
-    elif candidate.page_type in {"legal", "privacy", "about"}:
-        score += 0.1
-    if candidate.city_match:
-        score += 0.1
-    return min(score, 1.0)
-
-
 def _select_best_email(candidates: Iterable[EmailCandidate]) -> Optional[EmailCandidate]:
     best: Optional[EmailCandidate] = None
     for candidate in candidates:
@@ -589,10 +542,22 @@ def _select_best_email(candidates: Iterable[EmailCandidate]) -> Optional[EmailCa
 def _select_best_phone(candidates: Iterable[PhoneCandidate]) -> Optional[PhoneCandidate]:
     best: Optional[PhoneCandidate] = None
     for candidate in candidates:
-        if not best or candidate.score > best.score or (
-            candidate.score == best.score
-            and candidate.number_type == NumberType.FIXED_LINE
-            and (best.number_type != NumberType.FIXED_LINE)
+        if (
+            best is None
+            or candidate.score > best.score
+            or (
+                candidate.score == best.score
+                and best is not None
+                and candidate.number_type == NumberType.FIXED_LINE
+                and best.number_type != NumberType.FIXED_LINE
+            )
+            or (
+                candidate.score == best.score
+                and best is not None
+                and candidate.number_type == best.number_type
+                and candidate.city_match
+                and not best.city_match
+            )
         ):
             best = candidate
     return best
