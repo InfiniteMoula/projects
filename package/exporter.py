@@ -7,6 +7,33 @@ from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import pandas as pd
 
+
+CONTACT_DETAIL_COLUMNS = [
+    "site_web",
+    "site_web_source",
+    "site_web_score",
+    "email",
+    "email_source",
+    "email_score",
+    "telephone",
+    "telephone_source",
+    "telephone_score",
+    "linkedin_url",
+    "linkedin_source",
+    "linkedin_score",
+]
+
+METADATA_FIELD_SPECS = (
+    ("site_web_source", "source"),
+    ("site_web_score", "score"),
+    ("email_source", "source"),
+    ("email_score", "score"),
+    ("telephone_source", "source"),
+    ("telephone_score", "score"),
+    ("linkedin_source", "source"),
+    ("linkedin_score", "score"),
+)
+
 from quality.validation import FieldValidation, validate_email, validate_linkedin_url, validate_site_web, validate_telephone
 from utils import io
 
@@ -77,6 +104,8 @@ def _merge_contacts(base_df: pd.DataFrame, contacts_df: pd.DataFrame) -> pd.Data
         result = base_df.copy()
         _ensure_column(result, "emails", [])
         _ensure_column(result, "phones", [])
+        for column in CONTACT_DETAIL_COLUMNS:
+            _ensure_column(result, column, [])
         return result
 
     contacts = contacts_df.copy()
@@ -115,6 +144,8 @@ def _merge_contacts(base_df: pd.DataFrame, contacts_df: pd.DataFrame) -> pd.Data
 
     _ensure_column(merged, "emails", [])
     _ensure_column(merged, "phones", [])
+    for column in CONTACT_DETAIL_COLUMNS:
+        _ensure_column(merged, column, [])
 
     merged = merged.drop(columns=[col for col in ["siren_key", "domain_key", "contact_domain"] if col in merged.columns])
     return merged
@@ -185,7 +216,48 @@ def _compute_contact_validation_stats(df: pd.DataFrame) -> Dict[str, dict]:
             "valid_rate": round((valid / present * 100.0) if present else 0.0, 2),
         }
 
+    stats.update(_compute_metadata_field_stats(df, total_rows))
+
     return stats
+
+
+def _compute_metadata_field_stats(df: pd.DataFrame, total_rows: int) -> Dict[str, dict]:
+    metadata_stats: Dict[str, dict] = {}
+    index = df.index
+
+    for column, kind in METADATA_FIELD_SPECS:
+        if column not in df.columns:
+            if kind == "score":
+                df[column] = pd.Series([pd.NA] * total_rows, index=index, dtype="float64")
+            else:
+                df[column] = pd.Series([pd.NA] * total_rows, index=index, dtype="string")
+
+        series = df[column]
+        if kind == "score":
+            numeric_series = pd.to_numeric(series, errors="coerce")
+            present_mask = numeric_series.notna()
+            present = int(present_mask.sum())
+            valid_mask = numeric_series.between(0.0, 1.0, inclusive="both")
+            valid = int(valid_mask.sum())
+            df[column] = numeric_series
+        else:
+            string_series = series.astype("string").fillna("").str.strip()
+            present_mask = string_series.ne("")
+            present = int(present_mask.sum())
+            valid = present
+            df[column] = string_series.where(string_series.ne(""), pd.NA)
+
+        invalid = present - valid
+        missing = total_rows - present
+        metadata_stats[column] = {
+            "present": present,
+            "valid": valid,
+            "invalid": invalid,
+            "missing": missing,
+            "valid_rate": round((valid / present * 100.0) if present else 0.0, 2),
+        }
+
+    return metadata_stats
 
 
 def _write_quality_reports(outdir: Path, stats: Dict[str, dict], total_rows: int) -> dict:
@@ -269,7 +341,7 @@ def run(cfg: dict, ctx: dict) -> dict:
     contacts_df = _prepare_contacts(_load_contacts(outdir))
     merged_df = _merge_contacts(base_prepared, contacts_df)
 
-    for column in (
+    mandatory_columns = [
         "siren",
         "name",
         "naf",
@@ -277,11 +349,10 @@ def run(cfg: dict, ctx: dict) -> dict:
         "domain",
         "emails",
         "phones",
-        "site_web",
-        "email",
-        "telephone",
-        "linkedin_url",
-    ):
+        *CONTACT_DETAIL_COLUMNS,
+    ]
+
+    for column in mandatory_columns:
         if column not in merged_df.columns:
             merged_df[column] = pd.NA
 
