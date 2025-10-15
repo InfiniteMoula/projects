@@ -22,6 +22,7 @@ from config.enrichment_config import load_enrichment_config
 import create_job
 from metrics.collector import get_metrics
 from utils import budget_middleware, config, io, pipeline
+from utils.adaptive_controller import AdaptiveController, AdaptiveState
 from utils.ua import load_user_agent_pool
 
 try:
@@ -492,6 +493,68 @@ def _run_step(step_name, cfg, context):
     return status
 
 
+def _update_adaptive_context(ctx: dict, state: AdaptiveState) -> None:
+    enrichment_cfg = ctx.get("enrichment_config")
+    if not isinstance(enrichment_cfg, dict):
+        return
+
+    changed = state.concurrency_changed or state.chunk_size_changed
+
+    domains_cfg = enrichment_cfg.setdefault("domains", {})
+    if isinstance(domains_cfg, dict):
+        domains_cfg["chunk_size"] = state.chunk_size
+        http_cfg = domains_cfg.setdefault("http_client", {})
+        if isinstance(http_cfg, dict):
+            http_cfg["max_concurrent_requests"] = state.concurrency
+
+    for section in ("contacts", "linkedin"):
+        section_cfg = enrichment_cfg.get(section)
+        if not isinstance(section_cfg, dict):
+            continue
+        http_cfg = section_cfg.setdefault("http_client", {})
+        if isinstance(http_cfg, dict):
+            http_cfg["max_concurrent_requests"] = state.concurrency
+
+    if changed:
+        logger = ctx.get("logger") or pipeline.get_logger()
+        logger.info(
+            "Adaptive controller updated targets: concurrency=%s, chunk_size=%s",
+            state.concurrency,
+            state.chunk_size,
+        )
+
+
+def _apply_adaptive_feedback(ctx: dict, batch_results: Sequence[dict]) -> None:
+    controller: Optional[AdaptiveController] = ctx.get("adaptive_controller")
+    if not controller or not batch_results:
+        return
+
+    total = len(batch_results)
+    failures = sum(
+        1 for result in batch_results if result.get("status") not in {"OK", "SKIPPED", "WARN"}
+    )
+
+    total_requests = 0.0
+    total_duration = 0.0
+    for result in batch_results:
+        budget_stats = result.get("budget_stats") or {}
+        total_requests += float(budget_stats.get("http_requests", 0.0) or 0.0)
+        total_duration += float(result.get("duration_s", 0.0) or 0.0)
+
+    req_per_min = None
+    if total_duration > 0 and total_requests > 0:
+        req_per_min = (total_requests / total_duration) * 60.0
+
+    ram_gb = psutil.Process().memory_info().rss / (1024 ** 3)
+    state = controller.observe(
+        error_rate=failures / total if total else 0.0,
+        req_per_min=req_per_min,
+        ram_used=ram_gb,
+    )
+
+    _update_adaptive_context(ctx, state)
+
+
 def build_context(args, job):
     run_id = args.run_id or uuid.uuid4().hex[:12]
     outdir_path = Path(args.out).expanduser().resolve()
@@ -591,6 +654,41 @@ def build_context(args, job):
             flags[flag_name] = bool(override)
     enrichment_config = enrichment_cfg.model_dump()
     enrichment_config.update(flags)
+    adaptive_cfg = enrichment_cfg.adaptive
+    if adaptive_cfg.enabled:
+        domains_cfg = enrichment_config.setdefault("domains", {})
+        if isinstance(domains_cfg, dict):
+            http_cfg = domains_cfg.setdefault("http_client", {})
+            initial_concurrency = int(
+                http_cfg.get("max_concurrent_requests") or adaptive_cfg.min_concurrency
+            )
+            initial_chunk = int(domains_cfg.get("chunk_size") or adaptive_cfg.min_chunk)
+        else:
+            domains_cfg = {}
+            enrichment_config["domains"] = domains_cfg
+            http_cfg = {}
+            domains_cfg["http_client"] = http_cfg
+            initial_concurrency = adaptive_cfg.min_concurrency
+            initial_chunk = adaptive_cfg.min_chunk
+
+        controller = AdaptiveController(
+            adaptive_cfg,
+            initial_concurrency=initial_concurrency,
+            initial_chunk_size=initial_chunk,
+        )
+        domains_cfg["chunk_size"] = controller.current_chunk_size
+        http_cfg["max_concurrent_requests"] = controller.current_concurrency
+
+        for section in ("contacts", "linkedin"):
+            section_cfg = enrichment_config.get(section)
+            if not isinstance(section_cfg, dict):
+                continue
+            section_http = section_cfg.setdefault("http_client", {})
+            if isinstance(section_http, dict):
+                section_http["max_concurrent_requests"] = controller.current_concurrency
+
+        ctx["adaptive_controller"] = controller
+
     ctx["enrichment_config"] = enrichment_config
     ctx["enrichment_flags"] = flags
 
@@ -978,6 +1076,8 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                     future.cancel()
                 raise
 
+            batch_results = [results_map[name] for name in enabled_batch]
+            _apply_adaptive_feedback(ctx, batch_results)
             for name in enabled_batch:
                 results.append(results_map[name])
         elif use_thread and len(enabled_batch) > 1:
@@ -999,15 +1099,20 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                     future.cancel()
                 raise
 
+            batch_results = [results_map[name] for name in enabled_batch]
+            _apply_adaptive_feedback(ctx, batch_results)
             for name in enabled_batch:
                 results.append(results_map[name])
         else:
+            batch_results: List[dict] = []
             for name in enabled_batch:
                 result = _run_step(name, job, ctx)
                 _register_resume_outputs(ctx, result)
                 results.append(result)
+                batch_results.append(result)
                 if ctx.get('debug'):
                     logger.info("[DEBUG] Completed step %s: %s (%s)", step_positions[name], name, result['status'])
+            _apply_adaptive_feedback(ctx, batch_results)
 
     elapsed = round(time.time() - start_time, 1)
     ctx['metrics']['elapsed'] = elapsed

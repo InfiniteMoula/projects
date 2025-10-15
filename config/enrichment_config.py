@@ -201,6 +201,35 @@ class LinkedinConfig(BaseModel):
         return [str(item).strip() for item in value if str(item).strip()]
 
 
+class AdaptiveConfig(BaseModel):
+    """Configuration controlling adaptive tuning."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    max_ram_gb: float = Field(default=6.0, ge=0.0)
+    min_concurrency: int = Field(default=10, ge=1)
+    max_concurrency: int = Field(default=60, ge=1)
+    min_chunk: int = Field(default=300, ge=1)
+    max_chunk: int = Field(default=1200, ge=1)
+
+    @field_validator("max_concurrency")
+    @classmethod
+    def _ensure_concurrency_bounds(cls, value: int, info: ValidationInfo) -> int:
+        minimum = info.data.get("min_concurrency", 1)
+        if value < minimum:
+            raise ValueError("max_concurrency must be >= min_concurrency")
+        return value
+
+    @field_validator("max_chunk")
+    @classmethod
+    def _ensure_chunk_bounds(cls, value: int, info: ValidationInfo) -> int:
+        minimum = info.data.get("min_chunk", 1)
+        if value < minimum:
+            raise ValueError("max_chunk must be >= min_chunk")
+        return value
+
+
 class EnrichmentConfig(BaseModel):
     """Root configuration for enrichment steps."""
 
@@ -213,6 +242,7 @@ class EnrichmentConfig(BaseModel):
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     linkedin: LinkedinConfig = Field(default_factory=LinkedinConfig)
+    adaptive: AdaptiveConfig = Field(default_factory=AdaptiveConfig)
 
 
 @lru_cache(maxsize=1)
@@ -242,6 +272,7 @@ def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> Enric
 
 __all__ = [
     "ContactsConfig",
+    "AdaptiveConfig",
     "DomainsConfig",
     "EnrichmentConfig",
     "HttpClientConfig",
