@@ -209,6 +209,7 @@ class EnrichmentConfig(BaseModel):
     use_domains: bool = True
     use_contacts: bool = True
     use_linkedin: bool = True
+    use_correlation: bool = True
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     linkedin: LinkedinConfig = Field(default_factory=LinkedinConfig)

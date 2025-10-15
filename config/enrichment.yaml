@@ -3,6 +3,7 @@
 use_domains: true
 use_contacts: true
 use_linkedin: true
+use_correlation: true
 
 domains:
   # SERP providers used to discover company domains (evaluated in this order).

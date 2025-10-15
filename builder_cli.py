@@ -61,6 +61,7 @@ STEP_REGISTRY = {
     "enrich.domains": "enrich.enrich_domains:run",
     "enrich.contacts": "enrich.enrich_contacts:run",
     "enrich.linkedin": "enrich.enrich_linkedin:run",
+    "correlation.checks": "correlation.correlation:run",
     "scraper.maps": "scraper.maps_scraper:run",
     "quality.checks": "quality.checks:run",
     "quality.dedupe": "quality.dedupe:run",
@@ -105,6 +106,7 @@ STEP_DEPENDENCIES = {
     "enrich.domains": {"normalize.standardize", "enrich.address"},
     "enrich.contacts": {"enrich.domains"},
     "enrich.linkedin": {"normalize.standardize"},
+    "correlation.checks": {"enrich.contacts"},
     "enrich.google_maps": {"enrich.address"},
     "scraper.maps": {"normalize.standardize", "enrich.address"},
     "quality.checks": {"normalize.standardize"},
@@ -123,6 +125,7 @@ ENRICHMENT_STEP_FLAGS = {
     "enrich.domains": "use_domains",
     "enrich.contacts": "use_contacts",
     "enrich.linkedin": "use_linkedin",
+    "correlation.checks": "use_correlation",
 }
 
 PROFILES = {
@@ -160,6 +163,7 @@ PROFILES = {
         "enrich.address",
         "enrich.domains",
         "enrich.contacts",
+        "correlation.checks",
         "enrich.linkedin",
         "quality.checks",
         "quality.score",
@@ -577,6 +581,7 @@ def build_context(args, job):
         "use_domains": enrichment_cfg.use_domains,
         "use_contacts": enrichment_cfg.use_contacts,
         "use_linkedin": enrichment_cfg.use_linkedin,
+        "use_correlation": getattr(enrichment_cfg, "use_correlation", True),
     }
     for flag_name in flags:
         override = getattr(args, flag_name, None)
@@ -1257,11 +1262,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='Force-enable LinkedIn enrichment (overrides config)')
     common.add_argument('--no-linkedin', dest='use_linkedin', action='store_false',
                         help='Disable LinkedIn enrichment regardless of config')
+    common.add_argument('--use-correlation', dest='use_correlation', action='store_true',
+                        help='Force-enable correlation scoring (overrides config)')
+    common.add_argument('--no-correlation', dest='use_correlation', action='store_false',
+                        help='Disable correlation scoring regardless of config')
     common.set_defaults(
         respect_robots=None,
         use_domains=None,
         use_contacts=None,
         use_linkedin=None,
+        use_correlation=None,
     )
 
 
@@ -1314,10 +1324,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               help='Force-enable LinkedIn enrichment for generated jobs')
     batch_parser.add_argument('--no-linkedin', dest='use_linkedin', action='store_false',
                               help='Disable LinkedIn enrichment for generated jobs')
+    batch_parser.add_argument('--use-correlation', dest='use_correlation', action='store_true',
+                              help='Force-enable correlation scoring for generated jobs')
+    batch_parser.add_argument('--no-correlation', dest='use_correlation', action='store_false',
+                              help='Disable correlation scoring for generated jobs')
     batch_parser.set_defaults(
         use_domains=None,
         use_contacts=None,
         use_linkedin=None,
+        use_correlation=None,
     )
 
     sub.add_parser('resume', parents=[common])
