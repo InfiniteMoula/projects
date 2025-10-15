@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import threading
 import time
@@ -15,8 +14,11 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from cache.sqlite_cache import SQLiteCache
+from metrics.collector import get_metrics
+from utils.loggingx import get_logger
 
-LOGGER = logging.getLogger("net.http_client")
+LOGGER = get_logger("net.http_client")
+METRICS = get_metrics()
 
 
 @dataclass
@@ -144,6 +146,8 @@ class HttpClient:
     def get(self, url: str) -> httpx.Response:
         """Synchronous GET with retries, caching, and robots controls."""
         ua = self._choose_user_agent()
+        start = time.perf_counter()
+        endpoint = self._extract_host(url) or "unknown"
         try:
             if self._cache_enabled:
                 cached = self._read_cache(url)
@@ -156,12 +160,31 @@ class HttpClient:
                         request=request,
                     )
                     response.extensions["from_cache"] = True
-                    LOGGER.info("GET %s status=%s duration=0.000 source=cache", url, cached.status)
+                    duration = time.perf_counter() - start
+                    LOGGER.info("GET %s status=%s duration=%.3f source=cache", url, cached.status, duration)
+                    METRICS.record_cache_hit(endpoint, labels={"kind": "http"})
+                    METRICS.record_http_call(
+                        endpoint,
+                        "GET",
+                        cached.status,
+                        duration,
+                        labels={"kind": "http", "source": "cache"},
+                    )
                     return response
+                METRICS.record_cache_miss(endpoint, labels={"kind": "http"})
 
             if not self.allow_fetch(url, ua):
                 LOGGER.warning("GET %s blocked by robots", url)
-                return self._error_response("GET", url, "blocked_by_robots")
+                response = self._error_response("GET", url, "blocked_by_robots")
+                duration = time.perf_counter() - start
+                METRICS.record_http_call(
+                    endpoint,
+                    "GET",
+                    response.status_code,
+                    duration,
+                    labels={"kind": "http", "reason": "robots"},
+                )
+                return response
 
             host = self._extract_host(url)
             self._maybe_wait_sync(host)
@@ -173,7 +196,16 @@ class HttpClient:
             return status_response
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("GET %s unexpected error: %s", url, exc)
-            return self._error_response("GET", url, "unexpected_error")
+            response = self._error_response("GET", url, "unexpected_error")
+            duration = time.perf_counter() - start
+            METRICS.record_http_call(
+                endpoint,
+                "GET",
+                response.status_code,
+                duration,
+                labels={"kind": "http", "reason": "exception"},
+            )
+            return response
 
     def head(self, url: str) -> httpx.Response:
         """Synchronous HEAD with retries and robots controls."""
@@ -203,16 +235,38 @@ class HttpClient:
     async def _fetch_async(self, url: str) -> Tuple[int, str]:
         await self._ensure_async_primitives()
         ua = self._choose_user_agent()
+        start = time.perf_counter()
+        endpoint = self._extract_host(url) or "unknown"
+        recorded = False
+        retries_used = 0
         try:
             if self._cache_enabled:
                 cached = await asyncio.to_thread(self._read_cache, url)
                 if cached:
-                    LOGGER.info("GET %s status=%s duration=0.000 source=cache", url, cached.status)
+                    duration = time.perf_counter() - start
+                    LOGGER.info("GET %s status=%s duration=%.3f source=cache", url, cached.status, duration)
+                    METRICS.record_cache_hit(endpoint, labels={"kind": "http"})
+                    METRICS.record_http_call(
+                        endpoint,
+                        "GET",
+                        cached.status,
+                        duration,
+                        labels={"kind": "http", "source": "cache"},
+                    )
                     return cached.status, cached.text
+                METRICS.record_cache_miss(endpoint, labels={"kind": "http"})
 
             allowed = await asyncio.to_thread(self.allow_fetch, url, ua)
             if not allowed:
                 LOGGER.warning("GET %s blocked by robots", url)
+                duration = time.perf_counter() - start
+                METRICS.record_http_call(
+                    endpoint,
+                    "GET",
+                    0,
+                    duration,
+                    labels={"kind": "http", "reason": "robots"},
+                )
                 return 0, ""
 
             host = self._extract_host(url)
@@ -224,14 +278,14 @@ class HttpClient:
                     attempt = 0
                     last_text = ""
                     last_status = 0
-                    start = time.perf_counter()
+                    start_request = time.perf_counter()
                     while attempt < self._retry_attempts:
                         headers = self._build_headers(ua)
                         try:
                             response = await self._async_client.get(url, headers=headers)
                             last_status = response.status_code
                             last_text = response.text
-                            duration = time.perf_counter() - start
+                            duration = time.perf_counter() - start_request
                             if response.status_code in {429, 503} and attempt + 1 < self._retry_attempts:
                                 LOGGER.warning(
                                     "GET %s retryable status=%s attempt=%s",
@@ -240,23 +294,34 @@ class HttpClient:
                                     attempt + 1,
                                 )
                                 await self._sleep_backoff_async(attempt)
+                                retries_used += 1
                                 attempt += 1
                                 continue
 
                             LOGGER.info("GET %s status=%s duration=%.3f", url, response.status_code, duration)
+                            METRICS.record_http_call(
+                                endpoint,
+                                "GET",
+                                response.status_code,
+                                duration,
+                                retries=retries_used,
+                                labels={"kind": "http"},
+                            )
+                            recorded = True
                             if response.status_code == httpx.codes.OK and self._cache_enabled:
                                 await asyncio.to_thread(self._write_cache, url, response, ua)
                             break
                         except httpx.TimeoutException as exc:
-                            duration = time.perf_counter() - start
+                            duration = time.perf_counter() - start_request
                             LOGGER.warning("GET %s timeout attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc)
                             last_status = 0
                             last_text = ""
                             if attempt + 1 >= self._retry_attempts:
                                 break
                             await self._sleep_backoff_async(attempt)
+                            retries_used += 1
                         except httpx.HTTPError as exc:
-                            duration = time.perf_counter() - start
+                            duration = time.perf_counter() - start_request
                             LOGGER.warning(
                                 "GET %s http error attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc
                             )
@@ -265,18 +330,40 @@ class HttpClient:
                             if attempt + 1 >= self._retry_attempts:
                                 break
                             await self._sleep_backoff_async(attempt)
+                            retries_used += 1
                         attempt += 1
                     await self._mark_async(host)
+                    if not recorded:
+                        duration = time.perf_counter() - start_request
+                        METRICS.record_http_call(
+                            endpoint,
+                            "GET",
+                            last_status,
+                            duration,
+                            retries=retries_used,
+                            labels={"kind": "http"},
+                        )
                     return last_status, last_text
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("GET %s unexpected error: %s", url, exc)
+            duration = time.perf_counter() - start
+            METRICS.record_http_call(
+                endpoint,
+                "GET",
+                0,
+                duration,
+                labels={"kind": "http", "reason": "exception"},
+            )
             return 0, ""
 
     def _perform_sync_request(self, method: str, url: str, ua: str) -> httpx.Response:
         headers = self._build_headers(ua)
         attempt = 0
+        retries_used = 0
         last_response: Optional[httpx.Response] = None
         start = time.perf_counter()
+        endpoint = self._extract_host(url) or "unknown"
+        method_name = method.upper()
         while attempt < self._retry_attempts:
             try:
                 with self._sync_limit():
@@ -292,9 +379,18 @@ class HttpClient:
                         attempt + 1,
                     )
                     self._sleep_backoff_sync(attempt)
+                    retries_used += 1
                     attempt += 1
                     continue
                 LOGGER.info("%s %s status=%s duration=%.3f", method, url, response.status_code, duration)
+                METRICS.record_http_call(
+                    endpoint,
+                    method_name,
+                    response.status_code,
+                    duration,
+                    retries=retries_used,
+                    labels={"kind": "http"},
+                )
                 return response
             except httpx.TimeoutException as exc:
                 duration = time.perf_counter() - start
@@ -302,16 +398,37 @@ class HttpClient:
                 if attempt + 1 >= self._retry_attempts:
                     break
                 self._sleep_backoff_sync(attempt)
+                retries_used += 1
             except httpx.HTTPError as exc:
                 duration = time.perf_counter() - start
                 LOGGER.warning("%s %s http error attempt=%s duration=%.3f error=%s", method, url, attempt + 1, duration, exc)
                 if attempt + 1 >= self._retry_attempts:
                     break
                 self._sleep_backoff_sync(attempt)
+                retries_used += 1
             attempt += 1
         if last_response is not None:
+            duration = time.perf_counter() - start
+            METRICS.record_http_call(
+                endpoint,
+                method_name,
+                last_response.status_code,
+                duration,
+                retries=retries_used,
+                labels={"kind": "http"},
+            )
             return last_response
-        return self._error_response(method, url, "request_failed")
+        duration = time.perf_counter() - start
+        error_response = self._error_response(method, url, "request_failed")
+        METRICS.record_http_call(
+            endpoint,
+            method_name,
+            error_response.status_code,
+            duration,
+            retries=retries_used,
+            labels={"kind": "http", "reason": "request_failed"},
+        )
+        return error_response
 
     def allow_fetch(self, url: str, ua: str) -> bool:
         """Return False when robots.txt forbids fetching the given URL."""
