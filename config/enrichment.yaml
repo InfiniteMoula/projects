@@ -8,6 +8,11 @@ domains:
   # SERP providers used to discover company domains (evaluated in this order).
   providers: ["bing", "duckduckgo"]
 
+  embeddings:
+    enabled: false
+    threshold: 0.6
+    model: "all-MiniLM-L6-v2"
+
   # Per-provider fine tuning (here we only cap the number of results scanned).
   providers_config:
     bing:
