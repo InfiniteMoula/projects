@@ -14,7 +14,8 @@ from rapidfuzz import fuzz
 import tldextract
 
 from net.http_client import HttpClient
-from serp.providers import BingProvider, DuckDuckGoProvider, Result, SerpProvider
+from serp.providers import Result, SerpProvider, BingProvider, DuckDuckGoProvider
+from serp.playwright_provider import PlaywrightBingProvider, PlaywrightGoogleProvider
 from utils.scoring import score_domain
 
 LOGGER = logging.getLogger("enrich.site_web_search")
@@ -53,6 +54,8 @@ LEGAL_FORMS = (
 PROVIDER_REGISTRY: Dict[str, type[SerpProvider]] = {
     "bing": BingProvider,
     "duckduckgo": DuckDuckGoProvider,
+    "playwright_bing": PlaywrightBingProvider,
+    "playwright_google": PlaywrightGoogleProvider,
 }
 
 

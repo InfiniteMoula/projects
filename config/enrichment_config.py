@@ -193,6 +193,9 @@ class EnrichmentConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    use_domains: bool = True
+    use_contacts: bool = True
+    use_linkedin: bool = True
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     linkedin: LinkedinConfig = Field(default_factory=LinkedinConfig)

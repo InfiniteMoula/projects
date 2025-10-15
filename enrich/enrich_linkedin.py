@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import pandas as pd
 
 from net.http_client import HttpClient
-from serp.providers import BingProvider, DuckDuckGoProvider, Result, SerpProvider
+from serp.providers import Result, SerpProvider, BingProvider, DuckDuckGoProvider
+from serp.playwright_provider import PlaywrightBingProvider, PlaywrightGoogleProvider
 
 LOGGER = logging.getLogger("enrich.enrich_linkedin")
 
@@ -45,6 +46,8 @@ LEGAL_FORMS = (
 PROVIDER_REGISTRY = {
     "bing": BingProvider,
     "duckduckgo": DuckDuckGoProvider,
+    "playwright_bing": PlaywrightBingProvider,
+    "playwright_google": PlaywrightGoogleProvider,
 }
 
 

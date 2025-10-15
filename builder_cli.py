@@ -119,6 +119,12 @@ STEP_DEPENDENCIES = {
     "finalize.premium_dataset": {"package.export"},
 }
 
+ENRICHMENT_STEP_FLAGS = {
+    "enrich.domains": "use_domains",
+    "enrich.contacts": "use_contacts",
+    "enrich.linkedin": "use_linkedin",
+}
+
 PROFILES = {
     "quick": [
         "dumps.collect",
@@ -248,6 +254,31 @@ def _register_resume_outputs(ctx: dict, status: dict) -> None:
             fresh.add(str(output))
 
 
+def _is_enrichment_step_enabled(step_name: str, context: dict) -> bool:
+    flag_name = ENRICHMENT_STEP_FLAGS.get(step_name)
+    if not flag_name:
+        return True
+    flags = context.get("enrichment_flags") or {}
+    return bool(flags.get(flag_name, True))
+
+
+def _mark_enrichment_step_disabled(step_name: str, context: dict) -> dict:
+    logger = context.get("logger") or pipeline.get_logger()
+    log_lock = context.get("log_lock")
+    status = {
+        "step": step_name,
+        "status": "SKIPPED",
+        "reason": "disabled",
+        "duration_s": 0,
+    }
+    pipeline.log_step_event(logger, step_name, "disabled", status="SKIPPED", reason="disabled")
+    logs_path = context.get("logs")
+    if logs_path:
+        with (log_lock if log_lock else nullcontext()):
+            io.log_json(logs_path, status)
+    return status
+
+
 def load_job(job_path: os.PathLike[str] | str) -> dict:
     job_file = Path(job_path).expanduser().resolve()
     try:
@@ -291,6 +322,9 @@ def _run_step(step_name, cfg, context):
     outputs = _resolve_step_outputs(step_name, context)
     fresh_outputs = context.setdefault("_fresh_outputs", set())
     log_lock = context.get("log_lock")
+
+    if not _is_enrichment_step_enabled(step_name, context):
+        return _mark_enrichment_step_disabled(step_name, context)
 
     if context.get("resume"):
         if outputs and all(path.exists() for path in outputs):
@@ -532,8 +566,26 @@ def build_context(args, job):
         else:
             ctx["_prometheus"] = False
 
-    enrichment_cfg = load_enrichment_config()
-    ctx["enrichment_config"] = enrichment_cfg.model_dump()
+    cfg_path = getattr(args, "enrichment_config", None) or Path("config/enrichment.yaml")
+    cfg_path = Path(cfg_path).expanduser()
+    enrichment_cfg = getattr(args, "enrich_cfg", None)
+    if enrichment_cfg is None:
+        enrichment_cfg = load_enrichment_config(cfg_path)
+    ctx["enrichment_config_path"] = str(cfg_path.resolve())
+    ctx["enrich_cfg"] = enrichment_cfg
+    flags = {
+        "use_domains": enrichment_cfg.use_domains,
+        "use_contacts": enrichment_cfg.use_contacts,
+        "use_linkedin": enrichment_cfg.use_linkedin,
+    }
+    for flag_name in flags:
+        override = getattr(args, flag_name, None)
+        if override is not None:
+            flags[flag_name] = bool(override)
+    enrichment_config = enrichment_cfg.model_dump()
+    enrichment_config.update(flags)
+    ctx["enrichment_config"] = enrichment_config
+    ctx["enrichment_flags"] = flags
 
     return ctx
 
@@ -712,6 +764,8 @@ def run_batch_jobs(args, logger=None):
             str(job_output_dir),
             "--profile",
             args.profile,
+            "--enrichment-config",
+            str(args.enrichment_config),
         ]
 
         if args.sample > 0:
@@ -724,6 +778,18 @@ def run_batch_jobs(args, logger=None):
             cmd_args.append("--verbose")
         if getattr(args, 'debug', False):
             cmd_args.append("--debug")
+        if getattr(args, 'use_domains', None) is True:
+            cmd_args.append("--use-domains")
+        elif getattr(args, 'use_domains', None) is False:
+            cmd_args.append("--no-domains")
+        if getattr(args, 'use_contacts', None) is True:
+            cmd_args.append("--use-contacts")
+        elif getattr(args, 'use_contacts', None) is False:
+            cmd_args.append("--no-contacts")
+        if getattr(args, 'use_linkedin', None) is True:
+            cmd_args.append("--use-linkedin")
+        elif getattr(args, 'use_linkedin', None) is False:
+            cmd_args.append("--no-linkedin")
 
         try:
             start_time = time.time()
@@ -862,6 +928,7 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
     start_time = time.time()
 
     for batch in batches:
+        enabled_batch: List[str] = []
         for name in batch:
             if ctx.get('debug'):
                 logger.info("[DEBUG] Queuing step %s: %s", step_positions[name], name)
@@ -872,16 +939,24 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                 status='OK',
                 position=step_positions[name],
             )
+            if _is_enrichment_step_enabled(name, ctx):
+                enabled_batch.append(name)
+            else:
+                status = _mark_enrichment_step_disabled(name, ctx)
+                results.append(status)
 
-        if use_process and len(batch) > 1:
-            max_workers = max(1, min(ctx.get('workers', 1), len(batch)))
+        if not enabled_batch:
+            continue
+
+        if use_process and len(enabled_batch) > 1:
+            max_workers = max(1, min(ctx.get('workers', 1), len(enabled_batch)))
             results_map: Dict[str, dict] = {}
             payload_ctx = _prepare_process_context(ctx)
             try:
                 with ProcessPoolExecutor(max_workers=max_workers) as executor:
                     future_map = {
                         executor.submit(_run_step_in_process, name, copy.deepcopy(job), copy.deepcopy(payload_ctx)): name
-                        for name in batch
+                        for name in enabled_batch
                     }
                     for future in as_completed(future_map):
                         name = future_map[future]
@@ -895,15 +970,15 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                     future.cancel()
                 raise
 
-            for name in batch:
+            for name in enabled_batch:
                 results.append(results_map[name])
-        elif use_thread and len(batch) > 1:
-            max_workers = max(1, min(ctx.get('workers', 1), len(batch)))
+        elif use_thread and len(enabled_batch) > 1:
+            max_workers = max(1, min(ctx.get('workers', 1), len(enabled_batch)))
             results_map: Dict[str, dict] = {}
             future_map: Dict = {}
             try:
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_map = {executor.submit(_run_step, name, job, ctx): name for name in batch}
+                    future_map = {executor.submit(_run_step, name, job, ctx): name for name in enabled_batch}
                     for future in as_completed(future_map):
                         name = future_map[future]
                         result = future.result()
@@ -916,10 +991,10 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
                     future.cancel()
                 raise
 
-            for name in batch:
+            for name in enabled_batch:
                 results.append(results_map[name])
         else:
-            for name in batch:
+            for name in enabled_batch:
                 result = _run_step(name, job, ctx)
                 _register_resume_outputs(ctx, result)
                 results.append(result)
@@ -1130,6 +1205,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     common.add_argument('--out', required=True)
     common.add_argument('--input')
     common.add_argument('--run-id')
+    common.add_argument(
+        '--enrichment-config',
+        type=Path,
+        default=Path('config/enrichment.yaml'),
+        help='Path to enrichment config YAML file (default: config/enrichment.yaml)',
+    )
     common.add_argument('--dry-run', action='store_true')
     common.add_argument('--sample', type=int, default=0)
     common.add_argument('--concurrency', type=int, default=0,
@@ -1164,7 +1245,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                          help='Respect robots.txt directives (default)')
     common.add_argument('--no-respect-robots', dest='respect_robots', action='store_false',
                          help='Ignore robots.txt directives for crawling')
-    common.set_defaults(respect_robots=None)
+    common.add_argument('--use-domains', dest='use_domains', action='store_true',
+                        help='Force-enable domain enrichment (overrides config)')
+    common.add_argument('--no-domains', dest='use_domains', action='store_false',
+                        help='Disable domain enrichment regardless of config')
+    common.add_argument('--use-contacts', dest='use_contacts', action='store_true',
+                        help='Force-enable contact enrichment (overrides config)')
+    common.add_argument('--no-contacts', dest='use_contacts', action='store_false',
+                        help='Disable contact enrichment regardless of config')
+    common.add_argument('--use-linkedin', dest='use_linkedin', action='store_true',
+                        help='Force-enable LinkedIn enrichment (overrides config)')
+    common.add_argument('--no-linkedin', dest='use_linkedin', action='store_false',
+                        help='Disable LinkedIn enrichment regardless of config')
+    common.set_defaults(
+        respect_robots=None,
+        use_domains=None,
+        use_contacts=None,
+        use_linkedin=None,
+    )
 
 
     run_step_parser = sub.add_parser('run-step', parents=[common])
@@ -1193,16 +1291,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     batch_parser.add_argument('--dry-run', action='store_true', help="Generate jobs but don't run them")
     batch_parser.add_argument('--sample', type=int, default=0, help='Sample size for testing')
     batch_parser.add_argument('--workers', type=int, default=8, help='Number of workers')
+    batch_parser.add_argument(
+        '--enrichment-config',
+        type=Path,
+        default=Path('config/enrichment.yaml'),
+        help='Path to enrichment config YAML file (default: config/enrichment.yaml)',
+    )
     batch_parser.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
     batch_parser.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
     batch_parser.add_argument('--max-ram-mb', type=int, default=0, help='Maximum RAM budget in MB (0 = unlimited)')
     batch_parser.add_argument('--continue-on-error', action='store_true', help='Continue processing other NAF codes if one fails')
     batch_parser.add_argument('--json', action='store_true', help='Output results in JSON format')
+    batch_parser.add_argument('--use-domains', dest='use_domains', action='store_true',
+                              help='Force-enable domain enrichment for generated jobs')
+    batch_parser.add_argument('--no-domains', dest='use_domains', action='store_false',
+                              help='Disable domain enrichment for generated jobs')
+    batch_parser.add_argument('--use-contacts', dest='use_contacts', action='store_true',
+                              help='Force-enable contact enrichment for generated jobs')
+    batch_parser.add_argument('--no-contacts', dest='use_contacts', action='store_false',
+                              help='Disable contact enrichment for generated jobs')
+    batch_parser.add_argument('--use-linkedin', dest='use_linkedin', action='store_true',
+                              help='Force-enable LinkedIn enrichment for generated jobs')
+    batch_parser.add_argument('--no-linkedin', dest='use_linkedin', action='store_false',
+                              help='Disable LinkedIn enrichment for generated jobs')
+    batch_parser.set_defaults(
+        use_domains=None,
+        use_contacts=None,
+        use_linkedin=None,
+    )
 
     sub.add_parser('resume', parents=[common])
 
     args = parser.parse_args(argv)
     logger = pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
+
+    if hasattr(args, "enrichment_config"):
+        args.enrichment_config = Path(args.enrichment_config).expanduser()
+        args.enrich_cfg = load_enrichment_config(args.enrichment_config)
 
     try:
         if args.cmd == 'batch':
