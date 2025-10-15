@@ -26,6 +26,7 @@ from net.http_client import RequestLimiter
 from constants import GENERIC_EMAIL_DOMAINS as BASE_GENERIC_EMAIL_DOMAINS
 from constants import GENERIC_EMAIL_PREFIXES as BASE_GENERIC_EMAIL_PREFIXES
 from utils import scoring
+from utils.email_validation import has_mx_record
 from net import robots, sitemap as sitemap_utils
 
 LOGGER = logging.getLogger("enrich.enrich_contacts")
@@ -79,6 +80,7 @@ DEFAULT_SITEMAP_LIMIT = 5
 DEFAULT_TIMEOUT = 8.0
 DEFAULT_CHUNK_SIZE = 300
 DEFAULT_MAX_WORKERS = 8
+MX_RECORD_PENALTY = 0.4
 
 
 @dataclass
@@ -282,6 +284,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
     _configure_generic_email_filters(cfg)
     use_sitemaps = bool(cfg.get("use_sitemap", True))
     use_robots = bool(cfg.get("use_robots", True))
+    validate_mx = bool(cfg.get("validate_mx"))
     page_paths = tuple(cfg.get("paths", DEFAULT_PATHS))
     max_pages = int(cfg.get("max_pages_per_site", DEFAULT_MAX_PAGES))
     sitemap_limit = int(cfg.get("sitemap_limit", DEFAULT_SITEMAP_LIMIT))
@@ -300,6 +303,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
     total_phones = 0
     total_pages = 0
     timings: List[float] = []
+    mx_cache: Dict[str, bool] = {}
 
     df_out = df_in.copy()
     for col in (
@@ -379,6 +383,15 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                         on_company_domain=on_domain,
                     )
                     candidate.score = scoring.score_email(candidate.value, company_domain)
+                    if validate_mx and "@" in candidate.value:
+                        domain = candidate.value.rsplit("@", 1)[-1].strip().lower()
+                        if domain:
+                            has_mx = mx_cache.get(domain)
+                            if has_mx is None:
+                                has_mx = has_mx_record(domain)
+                                mx_cache[domain] = has_mx
+                            if not has_mx:
+                                candidate.score = max(0.0, candidate.score - MX_RECORD_PENALTY)
                     email_candidates.append(candidate)
 
                 for phone_value, number_type, city_match in phones:
