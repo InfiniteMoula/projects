@@ -15,12 +15,15 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from readability import Document
 
+from metrics.collector import get_metrics
 from utils import budget_middleware, io
 from utils.rate import PerHostRateLimiter, TimeBudget
 from utils.robots import RobotsCache
 from utils.ua import UserAgentPool, load_user_agent_pool
 from utils.url import canonicalize, looks_like_home, registered_domain, resolve, strip_fragment
 from utils.state import SequentialRunState
+
+METRICS = get_metrics()
 
 MAX_PAGE_BYTES = 1_000_000
 HTML_TRUNCATE_CHARS = 100_000
@@ -249,9 +252,26 @@ async def _crawl_target(
             "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.6",
         }
 
+        request_start = time.perf_counter()
         try:
             response = await client.get(current_url, headers=headers)
+            duration = time.perf_counter() - request_start
+            METRICS.record_http_call(
+                host,
+                "GET",
+                response.status_code,
+                duration,
+                labels={"kind": "crawler"},
+            )
         except httpx.HTTPError as exc:
+            duration = time.perf_counter() - request_start
+            METRICS.record_http_call(
+                host,
+                "GET",
+                0,
+                duration,
+                labels={"kind": "crawler", "reason": "http_error"},
+            )
             stats["errors"] += 1
             if request_tracker:
                 try:

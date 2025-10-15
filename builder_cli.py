@@ -20,6 +20,7 @@ from jsonschema import ValidationError as SchemaValidationError, validate as js_
 from config.enrichment_config import load_enrichment_config
 
 import create_job
+from metrics.collector import get_metrics
 from utils import budget_middleware, config, io, pipeline
 from utils.ua import load_user_agent_pool
 
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover - optional dependency
     prometheus_exporter = None
 
 LOGGER = logging.getLogger(__name__)
+METRICS = get_metrics()
 
 
 STEP_REGISTRY = {
@@ -870,6 +872,7 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
     logger = logger or pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
     ctx = build_context(args, job)
     ctx['logger'] = logger
+    METRICS.reset()
 
     steps_sorted = topo_sorted(steps, logger)
     total_steps = len(steps_sorted)
@@ -1103,6 +1106,27 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
     else:
         if not suppress_output:
             print(success_msg)
+
+    metrics_target = Path(ctx.get('metrics_file') or "reports/report_metrics.json")
+    export_path = None
+    try:
+        export_path = METRICS.export_json(metrics_target)
+    except OSError as exc:  # pragma: no cover - filesystem issues
+        logger.warning("Unable to write metrics report %s: %s", metrics_target, exc)
+
+    metrics_summary = METRICS.summary()
+    ctx['metrics']['summary'] = metrics_summary
+    if export_path is not None:
+        ctx['metrics']['report_file'] = str(export_path)
+        if ctx.get('debug'):
+            logger.info("[DEBUG] Metrics exported to %s", export_path)
+
+    summary_line = METRICS.format_summary()
+    if not suppress_output:
+        stream = sys.stdout if not getattr(args, 'json', False) else sys.stderr
+        print(summary_line, file=stream)
+    else:
+        logger.info(summary_line)
 
     if ctx.get('debug'):
         failed_steps = [r for r in results if r['status'] not in ('OK', 'SKIPPED', 'WARN')]
