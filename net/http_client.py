@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import os
 import random
 import threading
 import time
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -16,6 +12,8 @@ from urllib import robotparser
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+
+from cache.sqlite_cache import SQLiteCache
 
 LOGGER = logging.getLogger("net.http_client")
 
@@ -45,14 +43,15 @@ class HttpClient:
         self._default_headers = dict(self._cfg.get("default_headers", {}))
         self._user_agents = self._load_user_agents(self._cfg)
 
-        cache_dir_value = self._cfg.get("cache_dir")
-        self._cache_dir: Optional[Path] = None
-        if cache_dir_value:
-            self._cache_dir = Path(cache_dir_value)
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
         cache_ttl_days = float(self._cfg.get("cache_ttl_days", 1.0))
-        self._cache_ttl_seconds = cache_ttl_days * 86400.0
-        self._cache_enabled = self._cache_dir is not None and self._cache_ttl_seconds > 0
+        cache_dir_value = self._cfg.get("cache_dir")
+        self._cache: Optional[SQLiteCache] = None
+        if cache_dir_value and cache_ttl_days > 0:
+            cache_dir = Path(cache_dir_value)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            db_path = cache_dir / "http.db"
+            self._cache = SQLiteCache(str(db_path), cache_ttl_days)
+        self._cache_enabled = self._cache is not None
 
         limits = httpx.Limits(
             max_connections=int(
@@ -92,7 +91,6 @@ class HttpClient:
 
         self._robots_cache: Dict[str, Tuple[robotparser.RobotFileParser, float]] = {}
         self._robots_lock = threading.Lock()
-        self._cache_lock = threading.Lock()
 
     async def fetch_all(self, urls: List[str]) -> Dict[str, Tuple[int, str]]:
         """Fetch URLs concurrently with rate limits and retries."""
@@ -369,33 +367,35 @@ class HttpClient:
         headers.setdefault("Accept-Language", "en-US,en;q=0.5")
         return headers
 
-    def _cache_path(self, url: str) -> Path:
-        assert self._cache_dir is not None
-        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
-        return self._cache_dir / f"{digest}.json"
-
     def _read_cache(self, url: str) -> Optional[_CacheEntry]:
-        if not self._cache_enabled or self._cache_dir is None:
+        if not self._cache_enabled or self._cache is None:
             return None
-        path = self._cache_path(url)
-        if not path.exists():
+        payload = self._cache.get(url)
+        if not isinstance(payload, dict):
             return None
+        headers_map: Dict[str, str] = {}
+        raw_headers = payload.get("headers", {})
+        if isinstance(raw_headers, dict):
+            headers_map = {str(k): str(v) for k, v in raw_headers.items()}
+        elif isinstance(raw_headers, list):
+            headers_map = {str(k): str(v) for k, v in raw_headers}
         try:
-            raw = path.read_text(encoding="utf-8")
-            payload = json.loads(raw)
-        except (OSError, json.JSONDecodeError):
+            status = int(payload.get("status", 0))
+            text = str(payload.get("text", ""))
+            timestamp = float(payload.get("timestamp", time.time()))
+            user_agent = str(payload.get("user_agent", self._choose_user_agent()))
+        except (TypeError, ValueError):
             return None
-        timestamp = float(payload.get("timestamp", 0))
-        if time.time() - timestamp > self._cache_ttl_seconds:
-            return None
-        status = int(payload.get("status", 0))
-        text = str(payload.get("text", ""))
-        headers_map = {str(k): str(v) for k, v in payload.get("headers", {}).items()}
-        user_agent = str(payload.get("user_agent", self._choose_user_agent()))
-        return _CacheEntry(status=status, text=text, headers=headers_map, timestamp=timestamp, user_agent=user_agent)
+        return _CacheEntry(
+            status=status,
+            text=text,
+            headers=headers_map,
+            timestamp=timestamp,
+            user_agent=user_agent,
+        )
 
     def _write_cache(self, url: str, response: httpx.Response, ua: str) -> None:
-        if not self._cache_enabled or self._cache_dir is None:
+        if not self._cache_enabled or self._cache is None:
             return
         record = {
             "status": response.status_code,
@@ -404,17 +404,7 @@ class HttpClient:
             "timestamp": time.time(),
             "user_agent": ua,
         }
-        path = self._cache_path(url)
-        tmp_path = path.with_suffix(".tmp")
-        data = json.dumps(record, ensure_ascii=True)
-        with self._cache_lock:
-            try:
-                tmp_path.write_text(data, encoding="utf-8")
-                os.replace(tmp_path, path)
-            except OSError as exc:
-                LOGGER.warning("Failed to write cache for %s: %s", url, exc)
-                with suppress(OSError):
-                    tmp_path.unlink(missing_ok=True)
+        self._cache.set(url, record)
 
     async def _per_host_semaphore(self, host: str) -> asyncio.Semaphore:
         await self._ensure_async_primitives()

@@ -1,30 +1,89 @@
+### Enrichment configuration tuned for the zero-capital workflow.
+
 domains:
+  # SERP providers used to discover company domains (evaluated in this order).
   providers: ["bing", "duckduckgo"]
-  providers_config: {}
+
+  # Per-provider fine tuning (here we only cap the number of results scanned).
+  providers_config:
+    bing:
+      max_results: 5
+    duckduckgo:
+      max_results: 5
+
   http_client:
-    timeout: 8.0
-    max_concurrent_requests: 6
+    # Use a dedicated User-Agent pool file (one per line) for SERP requests.
+    user_agents_file: "data/user_agents.txt"
+    # To inline the pool instead of using a file, comment the line above and
+    # uncomment the block below.
+    # user_agents:
+    #   - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    #   - "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_2) Safari/605.1.15"
+
+    # Concurrency guard across all requests launched by the client.
+    max_concurrent_requests: 10
+    # Maximum parallel requests allowed for a single host.
     per_host_limit: 2
+    # Request timeout in seconds for both connection and response phases.
+    timeout: 8.0
+    # Number of retry attempts applied to recover from transient failures.
+    retry_attempts: 2
+    # Base delay (in seconds) for exponential backoff between retries.
+    delay_base: 1.0
+    # Directory used to persist HTTP responses between runs.
+    cache_dir: ".cache/http"
+    # Lifetime (in days) of cached responses before eviction.
+    cache_ttl_days: 7
+
+  # Minimum score required to accept a SERP result as the official website.
   serp_score_threshold: 0.65
+  # Minimum score required for heuristic guesses (slug + TLD probing).
   heuristic_score_threshold: 0.5
-  heuristic_tlds: ["fr", "com", "eu"]
-  heuristic_prefixes: ["", "www."]
+  # Country-code TLDs appended to the slug when probing (leading dots allowed here).
+  tlds: [".fr", ".com", ".eu"]
+  # Hostname prefixes evaluated during heuristic probing.
+  prefixes: ["", "www."]
 
 contacts:
   http_client:
-    timeout: 8.0
-    max_concurrent_requests: 4
+    # Contacts crawling shares the same networking constraints as SERP discovery.
+    user_agents_file: "data/user_agents.txt"
+    max_concurrent_requests: 10
     per_host_limit: 2
-  paths:
-    - /contact
-    - /mentions-legales
-    - /a-propos
-    - /privacy
+    timeout: 8.0
+    retry_attempts: 2
+    delay_base: 1.0
+    cache_dir: ".cache/http"
+    cache_ttl_days: 7
+
+  # Preferred pages to crawl when searching for emails and phone numbers.
+  pages_to_scan: ["/contact", "/mentions-legales", "/privacy", "/about"]
+  # Maximum pages to scan per website before stopping.
   max_pages_per_site: 8
+  # Maximum number of sitemap entries inspected when discovering new pages.
   sitemap_limit: 5
 
+  # Email domains considered generic and therefore deprioritised.
+  email_generic_domains: ["gmail.com", "orange.fr", "wanadoo.fr"]
+  # Local-part prefixes considered generic; used to evaluate candidate emails.
+  email_generic_prefixes: ["contact", "info", "support"]
+
 linkedin:
+  # SERP-based discovery of LinkedIn company pages leverages the same providers.
   providers: ["bing", "duckduckgo"]
-  providers_config: {}
+  providers_config:
+    bing:
+      max_results: 5
+    duckduckgo:
+      max_results: 5
+
   http_client:
-    timeout: 6.0
+    # LinkedIn discovery piggybacks on the same HTTP tuning for consistency.
+    user_agents_file: "data/user_agents.txt"
+    max_concurrent_requests: 10
+    per_host_limit: 2
+    timeout: 8.0
+    retry_attempts: 2
+    delay_base: 1.0
+    cache_dir: ".cache/http"
+    cache_ttl_days: 7

@@ -10,7 +10,6 @@ import traceback
 import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
-from functools import lru_cache
 import threading
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from pathlib import Path
@@ -18,8 +17,7 @@ from pathlib import Path
 import psutil
 import yaml
 from jsonschema import ValidationError as SchemaValidationError, validate as js_validate
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic import ValidationError as PydanticValidationError
+from config.enrichment_config import load_enrichment_config
 
 import create_job
 from utils import budget_middleware, config, io, pipeline
@@ -33,71 +31,6 @@ except ImportError:  # pragma: no cover - optional dependency
 LOGGER = logging.getLogger(__name__)
 
 
-class HttpClientSettings(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    timeout: Optional[float] = Field(default=None, ge=0.0)
-    max_concurrent_requests: Optional[int] = Field(default=None, ge=1)
-    per_host_limit: Optional[int] = Field(default=None, ge=1)
-    max_connections: Optional[int] = Field(default=None, ge=1)
-    max_keepalive_connections: Optional[int] = Field(default=None, ge=1)
-
-
-class DomainsSettings(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    providers: List[str] = Field(default_factory=list)
-    providers_config: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    http_client: HttpClientSettings = Field(default_factory=HttpClientSettings)
-    serp_score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    heuristic_score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    heuristic_tlds: List[str] = Field(default_factory=list)
-    heuristic_prefixes: List[str] = Field(default_factory=list)
-
-
-class ContactsSettings(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    http_client: HttpClientSettings = Field(default_factory=HttpClientSettings)
-    paths: List[str] = Field(default_factory=list)
-    max_pages_per_site: Optional[int] = Field(default=None, ge=1)
-    sitemap_limit: Optional[int] = Field(default=None, ge=0)
-
-
-class LinkedinSettings(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    providers: List[str] = Field(default_factory=list)
-    providers_config: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    http_client: HttpClientSettings = Field(default_factory=HttpClientSettings)
-
-
-class EnrichmentConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    domains: Optional[DomainsSettings] = None
-    contacts: Optional[ContactsSettings] = None
-    linkedin: Optional[LinkedinSettings] = None
-
-
-@lru_cache(maxsize=1)
-def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> EnrichmentConfig:
-    config_path = Path(path).expanduser().resolve()
-    if not config_path.exists():
-        LOGGER.debug("Enrichment config %s not found; using defaults", config_path)
-        return EnrichmentConfig()
-    try:
-        raw_data = yaml.safe_load(io.read_text(config_path))
-    except io.IoError as exc:
-        raise RuntimeError(f"Unable to read enrichment config: {config_path}") from exc
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid YAML in enrichment config {config_path}: {exc}") from exc
-
-    raw_payload = raw_data or {}
-    try:
-        return EnrichmentConfig.model_validate(raw_payload)
-    except PydanticValidationError as exc:
-        raise ValueError(f"Invalid enrichment config {config_path}: {exc}") from exc
 STEP_REGISTRY = {
     "dumps.collect": "dumps.collect_dump:run",
     "api.collect": "api.collect_api:run",
