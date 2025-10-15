@@ -75,6 +75,16 @@ class SerpProviderConfig(BaseModel):
     delay_base: float = Field(default=0.0, ge=0.0)
 
 
+class EmbeddingsConfig(BaseModel):
+    """Semantic embedding configuration for domain selection."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    model: str = "all-MiniLM-L6-v2"
+
+
 class DomainsConfig(BaseModel):
     """Domain discovery enrichment settings."""
 
@@ -88,6 +98,7 @@ class DomainsConfig(BaseModel):
     heuristic_tlds: List[str] = Field(default_factory=lambda: ["fr", "com", "eu", "net", "org"], alias="tlds")
     heuristic_prefixes: List[str] = Field(default_factory=lambda: ["", "www."], alias="prefixes")
     extra_generic_domains: List[str] = Field(default_factory=list)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
 
     @field_validator("providers", "heuristic_tlds", "heuristic_prefixes", mode="after")
     @classmethod
@@ -271,6 +282,7 @@ def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> Enric
 
 
 __all__ = [
+    "EmbeddingsConfig",
     "ContactsConfig",
     "AdaptiveConfig",
     "DomainsConfig",
