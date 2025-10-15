@@ -14,6 +14,11 @@ try:
 except ImportError:  # pragma: no cover - defensive
     tldextract = None
 
+from constants import (
+    GENERIC_EMAIL_DOMAINS as BASE_GENERIC_EMAIL_DOMAINS,
+    GENERIC_EMAIL_PREFIXES as BASE_GENERIC_EMAIL_PREFIXES,
+)
+
 _LEGAL_FORMS = {
     "SARL",
     "SARLU",
@@ -41,49 +46,9 @@ _LEGAL_FORMS = {
     "COOP",
 }
 
-_GENERIC_EMAIL_DOMAINS = {
-    "gmail.com",
-    "googlemail.com",
-    "yahoo.fr",
-    "yahoo.com",
-    "hotmail.com",
-    "hotmail.fr",
-    "outlook.com",
-    "live.com",
-    "live.fr",
-    "wanadoo.fr",
-    "orange.fr",
-    "laposte.net",
-    "free.fr",
-    "icloud.com",
-    "me.com",
-    "proton.me",
-    "protonmail.com",
-    "gmx.com",
-    "gmx.fr",
-}
+_GENERIC_EMAIL_DOMAINS: Set[str] = {item for item in BASE_GENERIC_EMAIL_DOMAINS if item}
 
-_GENERIC_EMAIL_PREFIXES = {
-    "contact",
-    "info",
-    "hello",
-    "support",
-    "service",
-    "commercial",
-    "vente",
-    "admin",
-    "administration",
-    "compta",
-    "billing",
-    "facturation",
-    "direction",
-    "rh",
-    "recrutement",
-    "postmaster",
-    "noreply",
-    "no-reply",
-    "bonjour",
-}
+_GENERIC_EMAIL_PREFIXES: Set[str] = {item for item in BASE_GENERIC_EMAIL_PREFIXES if item}
 
 _AREA_GROUPS = {
     "01": {"75", "77", "78", "91", "92", "93", "94", "95"},
@@ -114,6 +79,32 @@ for area_code, departments in _AREA_GROUPS.items():
     for department in departments:
         existing = _DEPARTMENT_AREAS.get(department, ())
         _DEPARTMENT_AREAS[department] = tuple(sorted(set(existing + (prefixed,))))
+
+
+def set_generic_email_filters(*, domains: Iterable[str], prefixes: Iterable[str]) -> None:
+    """Update the generic email domain/prefix lists used for scoring."""
+
+    normalized_domains: Set[str] = set()
+    for domain in domains or []:
+        normalized = _extract_registrable_domain(str(domain))
+        if normalized:
+            normalized_domains.add(normalized.lower())
+    if not normalized_domains:
+        normalized_domains = {item for item in BASE_GENERIC_EMAIL_DOMAINS if item}
+
+    normalized_prefixes: Set[str] = set()
+    for prefix in prefixes or []:
+        text = str(prefix).strip().lower()
+        if text:
+            normalized_prefixes.add(text)
+    if not normalized_prefixes:
+        normalized_prefixes = {item for item in BASE_GENERIC_EMAIL_PREFIXES if item}
+
+    _GENERIC_EMAIL_DOMAINS.clear()
+    _GENERIC_EMAIL_DOMAINS.update(normalized_domains)
+
+    _GENERIC_EMAIL_PREFIXES.clear()
+    _GENERIC_EMAIL_PREFIXES.update(normalized_prefixes)
 
 
 def score_domain(domain: str, company_name: str, city: Optional[str], title: Optional[str]) -> float:
@@ -428,4 +419,4 @@ def _same_suffix(domain_a: str, domain_b: str) -> bool:
     return parts_a == parts_b
 
 
-__all__ = ["score_domain", "score_email", "score_phone"]
+__all__ = ["score_domain", "score_email", "score_phone", "set_generic_email_filters"]

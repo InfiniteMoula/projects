@@ -87,6 +87,7 @@ class DomainsConfig(BaseModel):
     heuristic_score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     heuristic_tlds: List[str] = Field(default_factory=lambda: ["fr", "com", "eu", "net", "org"], alias="tlds")
     heuristic_prefixes: List[str] = Field(default_factory=lambda: ["", "www."], alias="prefixes")
+    extra_generic_domains: List[str] = Field(default_factory=list)
 
     @field_validator("providers", "heuristic_tlds", "heuristic_prefixes", mode="after")
     @classmethod
@@ -103,6 +104,18 @@ class DomainsConfig(BaseModel):
                 cleaned.append(text)
             elif allow_blank:
                 cleaned.append("")
+        return cleaned
+
+    @field_validator("extra_generic_domains", mode="after")
+    @classmethod
+    def _sanitize_generic_domains(cls, value: Iterable[str]) -> List[str]:
+        if not value:
+            return []
+        cleaned: List[str] = []
+        for item in value:
+            text = str(item).strip().lower()
+            if text:
+                cleaned.append(text)
         return cleaned
 
 
