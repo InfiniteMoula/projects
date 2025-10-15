@@ -1,0 +1,24 @@
+# Domaines génériques ou annuaires à exclure des résultats SERP
+118712.fr
+annuaire.com
+bloomberg.com
+corporama.com
+desfiches.free.fr
+e-pro.fr
+facebook.com
+google.com
+google.fr
+infobel.com
+infogreffe.fr
+kompass.com
+kompass.fr
+lefigaro.fr
+lesannuaires.com
+linkedin.com
+manageo.fr
+mappy.com
+pagesjaunes.fr
+societe.com
+societeinfo.com
+verif.com
+wikipedia.org

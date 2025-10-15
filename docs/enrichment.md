@@ -34,6 +34,7 @@ Chaque module ecrit ses sorties dans le repertoire `outdir` du run et respecte l
 - `serp_score_threshold` : score minimal pour accepter un resultat SERP comme domaine officiel.
 - `heuristic_score_threshold` : score minimal pour les tentatives heuristiques (ex. slug+tld).
 - `tlds`, `prefixes` : suffixes/prefixes explores lorsqu'on tente des combinaisons (les points initiaux sont acceptes dans le YAML pour la lisibilite).
+- `extra_generic_domains` : permet d'ajouter des domaines a exclure des SERP en plus de ceux definis dans `constants/generic_domains.txt` (annuaires, reseaux sociaux, etc.).
 
 ### Bloc `contacts`
 
@@ -42,7 +43,7 @@ Chaque module ecrit ses sorties dans le repertoire `outdir` du run et respecte l
 - `max_pages_per_site` : coupe la collecte pour eviter de s'etendre sur de grands sites.
 - `sitemap_limit` : nombre maximum d'URLs ajoutees depuis le sitemap.
 - `use_sitemap`, `use_robots` : activent la decouverte par sitemap et le respect de robots.txt.
-- `email_generic_domains` / `email_generic_prefixes` : listes pour deprioriser les emails trop generiques.
+- `email_generic_domains` / `email_generic_prefixes` : listes pour deprioriser les emails trop generiques. Des valeurs par defaut sont chargees depuis `constants/generic_email_domains.txt` et `constants/generic_email_prefixes.txt` puis enrichies avec celles declarees dans la configuration.
 
 ### Bloc `linkedin`
 

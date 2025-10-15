@@ -1,0 +1,20 @@
+# Préfixes d'adresses email considérés comme génériques
+admin
+administration
+billing
+bonjour
+commercial
+compta
+contact
+direction
+facturation
+hello
+info
+noreply
+no-reply
+postmaster
+recrutement
+rh
+service
+support
+vente

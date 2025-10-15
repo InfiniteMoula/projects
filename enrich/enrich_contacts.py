@@ -23,7 +23,9 @@ except ImportError:  # pragma: no cover - defensive
 
 from net.http_client import HttpClient
 from net.http_client import RequestLimiter
-from utils.scoring import score_email, score_phone
+from constants import GENERIC_EMAIL_DOMAINS as BASE_GENERIC_EMAIL_DOMAINS
+from constants import GENERIC_EMAIL_PREFIXES as BASE_GENERIC_EMAIL_PREFIXES
+from utils import scoring
 from net import robots, sitemap as sitemap_utils
 
 LOGGER = logging.getLogger("enrich.enrich_contacts")
@@ -47,27 +49,7 @@ EMAIL_OBFUSCATIONS: Tuple[Tuple[str, str], ...] = (
     (r"\s*\(\s*point\s*\)\s*", "."),
     (r"[\[\]\(\)]", " "),
 )
-GENERIC_EMAIL_PREFIXES = {
-    "contact",
-    "info",
-    "hello",
-    "support",
-    "service",
-    "commercial",
-    "vente",
-    "admin",
-    "administration",
-    "compta",
-    "billing",
-    "facturation",
-    "direction",
-    "rh",
-    "recrutement",
-    "postmaster",
-    "noreply",
-    "no-reply",
-    "bonjour",
-}
+GENERIC_EMAIL_PREFIXES: Set[str] = set(BASE_GENERIC_EMAIL_PREFIXES)
 LINKEDIN_PATTERN = re.compile(
     r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/(?:company|in)/[A-Za-z0-9_\-/%]+",
     re.IGNORECASE,
@@ -117,6 +99,41 @@ class PhoneCandidate:
     number_type: NumberType
     score: float = 0.0
     city_match: bool = False
+
+
+def _normalize_items(values: object) -> List[str]:
+    if not values:
+        return []
+    if isinstance(values, (str, bytes)):
+        candidates = [values]
+    elif isinstance(values, Mapping):
+        candidates = list(values.values())
+    elif isinstance(values, Iterable):
+        candidates = list(values)
+    else:
+        candidates = [values]
+
+    normalized: List[str] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip().lower()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _configure_generic_email_filters(cfg: Mapping[str, Any]) -> None:
+    prefixes = {item for item in BASE_GENERIC_EMAIL_PREFIXES if item}
+    prefixes.update(_normalize_items(cfg.get("email_generic_prefixes")))
+
+    GENERIC_EMAIL_PREFIXES.clear()
+    GENERIC_EMAIL_PREFIXES.update(prefixes)
+
+    domains = {item for item in BASE_GENERIC_EMAIL_DOMAINS if item}
+    domains.update(_normalize_items(cfg.get("email_generic_domains")))
+
+    scoring.set_generic_email_filters(domains=domains, prefixes=prefixes)
 
 
 def _resolve_chunk_size(cfg: Mapping[str, Any]) -> int:
@@ -262,6 +279,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
         http_cfg = dict(http_cfg_raw)
     else:
         http_cfg = dict(http_cfg_raw or {})
+    _configure_generic_email_filters(cfg)
     use_sitemaps = bool(cfg.get("use_sitemap", True))
     use_robots = bool(cfg.get("use_robots", True))
     page_paths = tuple(cfg.get("paths", DEFAULT_PATHS))
@@ -360,7 +378,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                         is_nominative=is_nominative,
                         on_company_domain=on_domain,
                     )
-                    candidate.score = score_email(candidate.value, company_domain)
+                    candidate.score = scoring.score_email(candidate.value, company_domain)
                     email_candidates.append(candidate)
 
                 for phone_value, number_type, city_match in phones:
@@ -371,7 +389,7 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                         number_type=number_type,
                         city_match=city_match,
                     )
-                    candidate.score = score_phone(candidate.value, city_code)
+                    candidate.score = scoring.score_phone(candidate.value, city_code)
                     phone_candidates.append(candidate)
 
             best_email = _select_best_email(email_candidates)

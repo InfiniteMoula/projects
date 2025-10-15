@@ -5,7 +5,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -14,6 +14,7 @@ from rapidfuzz import fuzz
 import tldextract
 
 from net.http_client import HttpClient
+from constants import GENERIC_DOMAINS
 from serp.providers import Result, SerpProvider, BingProvider, DuckDuckGoProvider
 from serp.playwright_provider import PlaywrightBingProvider, PlaywrightGoogleProvider
 from utils.scoring import score_domain
@@ -95,6 +96,7 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
     heuristic_prefixes: Sequence[str] = tuple(cfg.get("heuristic_prefixes", ("", "www.")))
 
     http_client = HttpClient(http_cfg)
+    generic_domains = _prepare_generic_domains(cfg.get("extra_generic_domains"))
     providers: List[Tuple[str, SerpProvider]] = []
     for provider_name in providers_cfg:
         provider_cls = PROVIDER_REGISTRY.get(str(provider_name).lower())
@@ -149,7 +151,7 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
                 except Exception as exc:  # pragma: no cover - defensive
                     LOGGER.warning("Provider %s failed for %s: %s", provider_name, denom_raw, exc)
                     continue
-                candidate = _pick_best_result(results, norm_name, norm_city)
+                candidate = _pick_best_result(results, norm_name, norm_city, generic_domains)
                 if not candidate:
                     continue
                 candidate.source = f"SERP:{provider_name}"
@@ -250,12 +252,80 @@ def _normalize_text(text: str) -> str:
     return ascii_text.strip()
 
 
-def _pick_best_result(results: Iterable[Result], norm_name: str, norm_city: str) -> Optional[_Candidate]:
+def _prepare_generic_domains(extra: object) -> Set[str]:
+    combined: Set[str] = {domain.lower() for domain in GENERIC_DOMAINS if domain}
+    if not extra:
+        return combined
+
+    if isinstance(extra, (str, bytes)):
+        candidates = [extra]
+    elif isinstance(extra, Mapping):
+        candidates = list(extra.values())
+    elif isinstance(extra, Iterable):
+        candidates = list(extra)
+    else:
+        candidates = [extra]
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if not text:
+            continue
+        normalized = _extract_registrable_domain(text)
+        if normalized:
+            combined.add(normalized)
+    return {domain for domain in combined if domain}
+
+
+def _extract_registrable_domain(value: str) -> str:
+    if not value:
+        return ""
+
+    text = value.strip().lower()
+    if not text:
+        return ""
+
+    if "://" in text:
+        netloc = urlparse(text).netloc
+    else:
+        netloc = text
+
+    netloc = netloc.split("@")[-1]
+    netloc = netloc.split(":")[0]
+
+    if tldextract:
+        parts = tldextract.extract(netloc)
+        if parts.domain and parts.suffix:
+            return f"{parts.domain}.{parts.suffix}".lower()
+
+    host = netloc.lstrip("www.")
+    segments = [segment for segment in host.split(".") if segment]
+    if len(segments) >= 2:
+        return ".".join(segments[-2:]).lower()
+    return host
+
+
+def _is_generic_domain(domain: str, generic_domains: Set[str]) -> bool:
+    if not domain:
+        return False
+    lowered = domain.lower()
+    if lowered in generic_domains:
+        return True
+    return any(lowered.endswith(f".{candidate}") for candidate in generic_domains)
+
+
+def _pick_best_result(
+    results: Iterable[Result],
+    norm_name: str,
+    norm_city: str,
+    generic_domains: Set[str],
+) -> Optional[_Candidate]:
     best_candidate: Optional[_Candidate] = None
     for result in results:
         if not result.url:
             continue
-        score = _score_serp_result(result, norm_name, norm_city)
+        score = _score_serp_result(result, norm_name, norm_city, generic_domains)
         if score <= 0:
             continue
         combined_title = " ".join(part for part in (result.title, result.snippet) if part)
@@ -265,13 +335,23 @@ def _pick_best_result(results: Iterable[Result], norm_name: str, norm_city: str)
     return best_candidate
 
 
-def _score_serp_result(result: Result, norm_name: str, norm_city: str) -> float:
+def _score_serp_result(
+    result: Result,
+    norm_name: str,
+    norm_city: str,
+    generic_domains: Set[str],
+) -> float:
     url = result.url
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         return 0.0
 
-    domain_text = _normalize_text(result.domain or parsed.netloc)
+    netloc = parsed.netloc
+    registrable_domain = _extract_registrable_domain(result.domain or netloc)
+    if registrable_domain and _is_generic_domain(registrable_domain, generic_domains):
+        return 0.0
+
+    domain_text = _normalize_text(result.domain or netloc)
     if not domain_text:
         return 0.0
 

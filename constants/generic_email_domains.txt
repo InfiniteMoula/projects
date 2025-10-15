@@ -1,0 +1,19 @@
+# Domaines d'adresses email génériques ou grand public
+free.fr
+gmail.com
+gmx.com
+gmx.fr
+googlemail.com
+hotmail.com
+hotmail.fr
+icloud.com
+laposte.net
+live.com
+live.fr
+orange.fr
+outlook.com
+proton.me
+protonmail.com
+wanadoo.fr
+yahoo.com
+yahoo.fr

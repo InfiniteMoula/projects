@@ -47,6 +47,8 @@ domains:
   tlds: [".fr", ".com", ".eu"]
   # Hostname prefixes evaluated during heuristic probing.
   prefixes: ["", "www."]
+  # Additional domains to exclude from SERP results.
+  extra_generic_domains: ["pagespro.orange.fr"]
 
 contacts:
   http_client:
