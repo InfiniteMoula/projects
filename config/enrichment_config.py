@@ -201,6 +201,78 @@ class LinkedinConfig(BaseModel):
         return [str(item).strip() for item in value if str(item).strip()]
 
 
+class CacheConfig(BaseModel):
+    """Caching behaviour for enrichment resources."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    enabled: bool = False
+    backend: str = Field(default="memory")
+    location: Optional[Path] = Field(default=None, alias="dsn")
+    ttl_seconds: float = Field(default=3600.0, ge=0.0, alias="ttl_sec")
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def _coerce_location(cls, value: object) -> Optional[Path]:
+        if value is None:
+            return None
+        if isinstance(value, Path):
+            return value.expanduser()
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            return Path(text).expanduser()
+        return None
+
+
+class CircuitBreakerConfig(BaseModel):
+    """Circuit breaker configuration for enrichment services."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    failure_threshold: int = Field(default=5, ge=1)
+    recovery_time_sec: float = Field(default=60.0, ge=0.0)
+    sample_window_sec: float = Field(default=30.0, ge=0.0)
+
+
+class AdaptiveConfig(BaseModel):
+    """Adaptive tuning for enrichment concurrency."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    min_parallelism: int = Field(default=1, ge=1)
+    max_parallelism: int = Field(default=4, ge=1)
+    target_latency_sec: float = Field(default=2.0, ge=0.0)
+    smoothing_factor: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class EmbeddingsConfig(BaseModel):
+    """Embeddings generation configuration."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    provider: str = Field(default="openai")
+    model: str = Field(default="text-embedding-3-small")
+    batch_size: int = Field(default=32, ge=1)
+    request_timeout: float = Field(default=30.0, ge=0.0)
+
+
+class AiConfig(BaseModel):
+    """Large language model invocation settings."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    provider: str = Field(default="openai")
+    model: str = Field(default="gpt-4.1-mini")
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    max_output_tokens: int = Field(default=512, ge=1)
+
+
 class EnrichmentConfig(BaseModel):
     """Root configuration for enrichment steps."""
 
@@ -212,6 +284,11 @@ class EnrichmentConfig(BaseModel):
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     linkedin: LinkedinConfig = Field(default_factory=LinkedinConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+    circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    adaptive: AdaptiveConfig = Field(default_factory=AdaptiveConfig)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    ai: AiConfig = Field(default_factory=AiConfig)
 
 
 @lru_cache(maxsize=1)
@@ -240,11 +317,16 @@ def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> Enric
 
 
 __all__ = [
+    "AdaptiveConfig",
+    "AiConfig",
+    "CacheConfig",
+    "CircuitBreakerConfig",
     "ContactsConfig",
     "DomainsConfig",
     "EnrichmentConfig",
     "HttpClientConfig",
     "LinkedinConfig",
+    "EmbeddingsConfig",
     "SerpProviderConfig",
     "load_enrichment_config",
 ]

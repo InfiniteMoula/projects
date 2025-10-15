@@ -69,7 +69,9 @@ STEP_REGISTRY = {
     "quality.clean_contacts": "quality.clean_contacts:run",
     "quality.clean_contacts.initial": "quality.clean_contacts:run",
     "quality.clean_contacts.final": "quality.clean_contacts:run",
+    "quality.correlation": "quality.correlation:run",
     "monitor.scraper": "monitor.monitor_scraper:run",
+    "monitor.metrics_export": "monitor.metrics_export:run",
     "package.export": "package.exporter:run",
     "finalize.premium_dataset": "utils.filters:run_finalize_premium_dataset",
 }
@@ -114,7 +116,9 @@ STEP_DEPENDENCIES = {
     "quality.clean_contacts": {"parse.contacts"},
     "quality.clean_contacts.initial": {"parse.contacts.initial"},
     "quality.clean_contacts.final": {"parse.contacts.final"},
+    "quality.correlation": {"quality.score"},
     "monitor.scraper": {"quality.clean_contacts.final"},
+    "monitor.metrics_export": {"quality.correlation"},
     "package.export": {"quality.score"},
     "finalize.premium_dataset": {"package.export"},
 }
@@ -163,6 +167,20 @@ PROFILES = {
         "enrich.linkedin",
         "quality.checks",
         "quality.score",
+        "package.export",
+    ],
+    "standard_nocapital_v2": [
+        "dumps.collect",
+        "api.collect",
+        "normalize.standardize",
+        "enrich.address",
+        "enrich.domains",
+        "enrich.contacts",
+        "enrich.linkedin",
+        "quality.checks",
+        "quality.score",
+        "quality.correlation",
+        "monitor.metrics_export",
         "package.export",
     ],
     "hybrid": [
@@ -232,8 +250,32 @@ STEP_OUTPUT_HINTS = {
     "quality.clean_contacts.final": ["contacts/contacts_clean.parquet"],
     "headless.collect_fallback": ["headless/pages_dynamic.parquet"],
     "monitor.scraper": ["metrics/summary.json", "metrics/scraper_stats.csv"],
+    "quality.correlation": ["metrics/correlation.json"],
+    "monitor.metrics_export": ["metrics/scraper_stats.csv"],
     "finalize.premium_dataset": ["dataset.csv", "dataset.parquet"],
 }
+
+
+def _apply_profile_overrides(args, profile: Optional[str]) -> None:
+    """Mutate *args* to inject feature defaults for specific profiles."""
+
+    if profile != "standard_nocapital_v2":
+        return
+
+    if getattr(args, "enable_correlation", None) is None:
+        args.enable_correlation = True
+    if getattr(args, "enable_metrics_export", None) is None:
+        args.enable_metrics_export = True
+    if getattr(args, "enable_cache", None) is None:
+        args.enable_cache = True
+    if getattr(args, "cache_backend", None) is None:
+        args.cache_backend = "sqlite"
+    if getattr(args, "enable_circuit_breaker", None) is None:
+        args.enable_circuit_breaker = True
+    if getattr(args, "enable_embeddings", None) is None:
+        args.enable_embeddings = False
+    if getattr(args, "enable_ai", None) is None:
+        args.enable_ai = False
 
 
 def _resolve_step_outputs(step_name: str, context: dict) -> List[Path]:
@@ -587,6 +629,54 @@ def build_context(args, job):
     ctx["enrichment_config"] = enrichment_config
     ctx["enrichment_flags"] = flags
 
+    def _stringify_paths(data: dict) -> dict:
+        result = {}
+        for key, value in data.items():
+            if isinstance(value, Path):
+                result[key] = str(value)
+            else:
+                result[key] = value
+        return result
+
+    cache_cfg = enrichment_cfg.cache.model_copy()
+    if getattr(args, "enable_cache", None) is not None:
+        cache_cfg.enabled = bool(args.enable_cache)
+    cache_backend = getattr(args, "cache_backend", None)
+    if cache_backend:
+        cache_cfg.backend = cache_backend
+    cache_path = getattr(args, "cache_path", None)
+    if cache_path:
+        cache_cfg.location = Path(cache_path).expanduser()
+    circuit_cfg = enrichment_cfg.circuit_breaker.model_copy()
+    if getattr(args, "enable_circuit_breaker", None) is not None:
+        circuit_cfg.enabled = bool(args.enable_circuit_breaker)
+    adaptive_cfg = enrichment_cfg.adaptive.model_copy()
+    if getattr(args, "enable_adaptive", None) is not None:
+        adaptive_cfg.enabled = bool(args.enable_adaptive)
+    embeddings_cfg = enrichment_cfg.embeddings.model_copy()
+    if getattr(args, "enable_embeddings", None) is not None:
+        embeddings_cfg.enabled = bool(args.enable_embeddings)
+    ai_cfg = enrichment_cfg.ai.model_copy()
+    if getattr(args, "enable_ai", None) is not None:
+        ai_cfg.enabled = bool(args.enable_ai)
+
+    ctx["cache_config"] = _stringify_paths(cache_cfg.model_dump())
+    ctx["circuit_breaker_config"] = circuit_cfg.model_dump()
+    ctx["adaptive_config"] = adaptive_cfg.model_dump()
+    ctx["embeddings_config"] = embeddings_cfg.model_dump()
+    ctx["ai_config"] = ai_cfg.model_dump()
+
+    features = {
+        "correlation": bool(getattr(args, "enable_correlation", False)),
+        "metrics_export": bool(getattr(args, "enable_metrics_export", False)),
+        "cache": bool(cache_cfg.enabled),
+        "circuit_breaker": bool(circuit_cfg.enabled),
+        "adaptive": bool(adaptive_cfg.enabled),
+        "embeddings": bool(embeddings_cfg.enabled),
+        "ai": bool(ai_cfg.enabled),
+    }
+    ctx["features"] = features
+
     return ctx
 
 
@@ -790,6 +880,40 @@ def run_batch_jobs(args, logger=None):
             cmd_args.append("--use-linkedin")
         elif getattr(args, 'use_linkedin', None) is False:
             cmd_args.append("--no-linkedin")
+        if getattr(args, 'enable_correlation', None) is True:
+            cmd_args.append("--enable-correlation")
+        elif getattr(args, 'enable_correlation', None) is False:
+            cmd_args.append("--disable-correlation")
+        if getattr(args, 'enable_metrics_export', None) is True:
+            cmd_args.append("--enable-metrics-export")
+        elif getattr(args, 'enable_metrics_export', None) is False:
+            cmd_args.append("--disable-metrics-export")
+        if getattr(args, 'enable_cache', None) is True:
+            cmd_args.append("--enable-cache")
+        elif getattr(args, 'enable_cache', None) is False:
+            cmd_args.append("--disable-cache")
+        cache_backend = getattr(args, 'cache_backend', None)
+        if cache_backend:
+            cmd_args.extend(["--cache-backend", cache_backend])
+        cache_path = getattr(args, 'cache_path', None)
+        if cache_path:
+            cmd_args.extend(["--cache-path", str(cache_path)])
+        if getattr(args, 'enable_circuit_breaker', None) is True:
+            cmd_args.append("--enable-circuit-breaker")
+        elif getattr(args, 'enable_circuit_breaker', None) is False:
+            cmd_args.append("--disable-circuit-breaker")
+        if getattr(args, 'enable_adaptive', None) is True:
+            cmd_args.append("--enable-adaptive")
+        elif getattr(args, 'enable_adaptive', None) is False:
+            cmd_args.append("--disable-adaptive")
+        if getattr(args, 'enable_embeddings', None) is True:
+            cmd_args.append("--enable-embeddings")
+        elif getattr(args, 'enable_embeddings', None) is False:
+            cmd_args.append("--disable-embeddings")
+        if getattr(args, 'enable_ai', None) is True:
+            cmd_args.append("--enable-ai")
+        elif getattr(args, 'enable_ai', None) is False:
+            cmd_args.append("--disable-ai")
 
         try:
             start_time = time.time()
@@ -1257,11 +1381,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='Force-enable LinkedIn enrichment (overrides config)')
     common.add_argument('--no-linkedin', dest='use_linkedin', action='store_false',
                         help='Disable LinkedIn enrichment regardless of config')
+    common.add_argument('--enable-correlation', dest='enable_correlation', action='store_true',
+                        help='Enable correlation analysis step')
+    common.add_argument('--disable-correlation', dest='enable_correlation', action='store_false',
+                        help='Disable correlation analysis step')
+    common.add_argument('--enable-metrics-export', dest='enable_metrics_export', action='store_true',
+                        help='Enable final metrics export step')
+    common.add_argument('--disable-metrics-export', dest='enable_metrics_export', action='store_false',
+                        help='Disable final metrics export step')
+    common.add_argument('--enable-cache', dest='enable_cache', action='store_true',
+                        help='Enable enrichment cache (overrides config file)')
+    common.add_argument('--disable-cache', dest='enable_cache', action='store_false',
+                        help='Disable enrichment cache (overrides config file)')
+    common.add_argument('--cache-backend', choices=['memory', 'sqlite'],
+                        help='Override cache backend implementation')
+    common.add_argument('--cache-path', type=Path,
+                        help='Override cache storage path / DSN')
+    common.add_argument('--enable-circuit-breaker', dest='enable_circuit_breaker', action='store_true',
+                        help='Enable enrichment circuit breaker protections')
+    common.add_argument('--disable-circuit-breaker', dest='enable_circuit_breaker', action='store_false',
+                        help='Disable enrichment circuit breaker protections')
+    common.add_argument('--enable-adaptive', dest='enable_adaptive', action='store_true',
+                        help='Enable adaptive concurrency controls')
+    common.add_argument('--disable-adaptive', dest='enable_adaptive', action='store_false',
+                        help='Disable adaptive concurrency controls')
+    common.add_argument('--enable-embeddings', dest='enable_embeddings', action='store_true',
+                        help='Enable embeddings generation during enrichment')
+    common.add_argument('--disable-embeddings', dest='enable_embeddings', action='store_false',
+                        help='Disable embeddings generation during enrichment')
+    common.add_argument('--enable-ai', dest='enable_ai', action='store_true',
+                        help='Enable AI assistants during enrichment')
+    common.add_argument('--disable-ai', dest='enable_ai', action='store_false',
+                        help='Disable AI assistants during enrichment')
     common.set_defaults(
         respect_robots=None,
         use_domains=None,
         use_contacts=None,
         use_linkedin=None,
+        enable_correlation=None,
+        enable_metrics_export=None,
+        enable_cache=None,
+        enable_circuit_breaker=None,
+        enable_adaptive=None,
+        enable_embeddings=None,
+        enable_ai=None,
     )
 
 
@@ -1344,6 +1507,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.cmd in ('run-profile', 'resume'):
             profile = getattr(args, 'profile', None) or job.get('profile') or 'quick'
             steps = PROFILES[profile]
+            _apply_profile_overrides(args, profile)
         else:
             profile = None
             steps = []

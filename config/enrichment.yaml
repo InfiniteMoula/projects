@@ -97,3 +97,41 @@ linkedin:
     delay_base: 1.0
     cache_dir: ".cache/http"
     cache_ttl_days: 7
+
+cache:
+  # Shared cache configuration for enrichment datasets.
+  enabled: false
+  backend: "memory"
+  ttl_sec: 3600
+  dsn: ""
+
+circuit_breaker:
+  # Guard downstream providers with a protective circuit breaker.
+  enabled: false
+  failure_threshold: 5
+  recovery_time_sec: 60.0
+  sample_window_sec: 30.0
+
+adaptive:
+  # Dynamically adjust concurrency to keep latency stable.
+  enabled: false
+  min_parallelism: 1
+  max_parallelism: 4
+  target_latency_sec: 2.0
+  smoothing_factor: 0.5
+
+embeddings:
+  # Control embeddings generation behaviour for AI enrichments.
+  enabled: true
+  provider: "openai"
+  model: "text-embedding-3-small"
+  batch_size: 32
+  request_timeout: 30.0
+
+ai:
+  # Global AI assistant configuration (LLM invocations, etc.).
+  enabled: true
+  provider: "openai"
+  model: "gpt-4.1-mini"
+  temperature: 0.0
+  max_output_tokens: 512
