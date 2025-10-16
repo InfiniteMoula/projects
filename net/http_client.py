@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib import robotparser
@@ -13,22 +13,12 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-from cache.sqlite_cache import SQLiteCache
+from cache.sqlite_cache import CachedResponse, SqliteCache
 from metrics.collector import get_metrics
 from utils.loggingx import get_logger
 
 LOGGER = get_logger("net.http_client")
 METRICS = get_metrics()
-
-
-@dataclass
-class _CacheEntry:
-    status: int
-    text: str
-    headers: Dict[str, str]
-    timestamp: float
-    user_agent: str
-
 
 class RequestLimiter:
     """Shared limiter coordinating synchronous and asynchronous HTTP request concurrency."""
@@ -82,14 +72,49 @@ class HttpClient:
         self._default_headers = dict(self._cfg.get("default_headers", {}))
         self._user_agents = self._load_user_agents(self._cfg)
 
-        cache_ttl_days = float(self._cfg.get("cache_ttl_days", 1.0))
-        cache_dir_value = self._cfg.get("cache_dir")
-        self._cache: Optional[SQLiteCache] = None
-        if cache_dir_value and cache_ttl_days > 0:
-            cache_dir = Path(cache_dir_value)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            db_path = cache_dir / "http.db"
-            self._cache = SQLiteCache(str(db_path), cache_ttl_days)
+        self._cache: Optional[SqliteCache] = None
+        self._cache_hits = 0
+        self._cache_lookups = 0
+        self._cache_stats_lock = threading.Lock()
+        cache_cfg = self._cfg.get("cache")
+        if isinstance(cache_cfg, Mapping):
+            enabled = bool(cache_cfg.get("enabled", False))
+            if enabled:
+                db_path = cache_cfg.get("db_path")
+                ttl_raw = cache_cfg.get("ttl_seconds", 0)
+                max_raw = cache_cfg.get("max_items", 0)
+                try:
+                    ttl_seconds = int(ttl_raw)
+                except (TypeError, ValueError):
+                    ttl_seconds = 0
+                try:
+                    max_items = int(max_raw)
+                except (TypeError, ValueError):
+                    max_items = 0
+                if db_path and ttl_seconds > 0:
+                    cache_path = Path(str(db_path))
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        self._cache = SqliteCache(str(cache_path), ttl_seconds, max_items)
+                    except sqlite3.DatabaseError:
+                        LOGGER.warning("Failed to initialise HTTP cache at %s", cache_path)
+        else:
+            cache_ttl_days = float(self._cfg.get("cache_ttl_days", 0.0))
+            cache_dir_value = self._cfg.get("cache_dir")
+            if cache_dir_value and cache_ttl_days > 0:
+                cache_dir = Path(cache_dir_value)
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                ttl_seconds = int(cache_ttl_days * 86400)
+                db_path = cache_dir / "http.sqlite"
+                max_items_raw = self._cfg.get("cache_max_items", 0)
+                try:
+                    max_items = int(max_items_raw)
+                except (TypeError, ValueError):
+                    max_items = 0
+                try:
+                    self._cache = SqliteCache(str(db_path), ttl_seconds, max_items)
+                except sqlite3.DatabaseError:
+                    LOGGER.warning("Failed to initialise HTTP cache at %s", db_path)
         self._cache_enabled = self._cache is not None
 
         limits = httpx.Limits(
@@ -150,13 +175,13 @@ class HttpClient:
         endpoint = self._extract_host(url) or "unknown"
         try:
             if self._cache_enabled:
-                cached = self._read_cache(url)
+                cached = self._read_cache("GET", url, b"")
                 if cached:
-                    request = httpx.Request("GET", url, headers=self._build_headers(cached.user_agent))
+                    request = httpx.Request("GET", url)
                     response = httpx.Response(
                         status_code=cached.status,
                         headers=cached.headers,
-                        content=cached.text.encode("utf-8"),
+                        content=cached.payload,
                         request=request,
                     )
                     response.extensions["from_cache"] = True
@@ -192,7 +217,7 @@ class HttpClient:
             self._mark_sync(host)
 
             if status_response.status_code == httpx.codes.OK and self._cache_enabled:
-                self._write_cache(url, status_response, ua)
+                self._write_cache("GET", url, status_response, b"")
             return status_response
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("GET %s unexpected error: %s", url, exc)
@@ -241,7 +266,7 @@ class HttpClient:
         retries_used = 0
         try:
             if self._cache_enabled:
-                cached = await asyncio.to_thread(self._read_cache, url)
+                cached = await asyncio.to_thread(self._read_cache, "GET", url, b"")
                 if cached:
                     duration = time.perf_counter() - start
                     LOGGER.info("GET %s status=%s duration=%.3f source=cache", url, cached.status, duration)
@@ -253,7 +278,7 @@ class HttpClient:
                         duration,
                         labels={"kind": "http", "source": "cache"},
                     )
-                    return cached.status, cached.text
+                    return cached.status, cached.payload.decode("utf-8", errors="replace")
                 METRICS.record_cache_miss(endpoint, labels={"kind": "http"})
 
             allowed = await asyncio.to_thread(self.allow_fetch, url, ua)
@@ -309,7 +334,7 @@ class HttpClient:
                             )
                             recorded = True
                             if response.status_code == httpx.codes.OK and self._cache_enabled:
-                                await asyncio.to_thread(self._write_cache, url, response, ua)
+                                await asyncio.to_thread(self._write_cache, "GET", url, response, b"")
                             break
                         except httpx.TimeoutException as exc:
                             duration = time.perf_counter() - start_request
@@ -527,44 +552,44 @@ class HttpClient:
         headers.setdefault("Accept-Language", "en-US,en;q=0.5")
         return headers
 
-    def _read_cache(self, url: str) -> Optional[_CacheEntry]:
+    def _record_cache_lookup(self, hit: bool) -> None:
+        if not self._cache_enabled:
+            return
+        with self._cache_stats_lock:
+            self._cache_lookups += 1
+            if hit:
+                self._cache_hits += 1
+            lookups = self._cache_lookups
+            if lookups <= 10 or lookups % 100 == 0:
+                ratio = self._cache_hits / lookups if lookups else 0.0
+                LOGGER.info(
+                    "HTTP cache hit ratio: %.2f (%d/%d)",
+                    ratio,
+                    self._cache_hits,
+                    lookups,
+                )
+
+    def _read_cache(self, method: str, url: str, body: bytes) -> Optional[CachedResponse]:
         if not self._cache_enabled or self._cache is None:
             return None
-        payload = self._cache.get(url)
-        if not isinstance(payload, dict):
-            return None
-        headers_map: Dict[str, str] = {}
-        raw_headers = payload.get("headers", {})
-        if isinstance(raw_headers, dict):
-            headers_map = {str(k): str(v) for k, v in raw_headers.items()}
-        elif isinstance(raw_headers, list):
-            headers_map = {str(k): str(v) for k, v in raw_headers}
-        try:
-            status = int(payload.get("status", 0))
-            text = str(payload.get("text", ""))
-            timestamp = float(payload.get("timestamp", time.time()))
-            user_agent = str(payload.get("user_agent", self._choose_user_agent()))
-        except (TypeError, ValueError):
-            return None
-        return _CacheEntry(
-            status=status,
-            text=text,
-            headers=headers_map,
-            timestamp=timestamp,
-            user_agent=user_agent,
-        )
+        params_hash = SqliteCache.hash_payload(body or b"")
+        cached = self._cache.get(url, method, params_hash)
+        self._record_cache_lookup(cached is not None)
+        return cached
 
-    def _write_cache(self, url: str, response: httpx.Response, ua: str) -> None:
+    def _write_cache(self, method: str, url: str, response: httpx.Response, body: bytes) -> None:
         if not self._cache_enabled or self._cache is None:
             return
-        record = {
-            "status": response.status_code,
-            "text": response.text,
-            "headers": dict(response.headers.items()),
-            "timestamp": time.time(),
-            "user_agent": ua,
-        }
-        self._cache.set(url, record)
+        params_hash = SqliteCache.hash_payload(body or b"")
+        headers = dict(response.headers.items())
+        self._cache.set(
+            url=url,
+            method=method,
+            params_hash=params_hash,
+            payload=response.content,
+            headers=headers,
+            status=response.status_code,
+        )
 
     async def _per_host_semaphore(self, host: str) -> asyncio.Semaphore:
         await self._ensure_async_primitives()

@@ -91,9 +91,9 @@ class CacheConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     enabled: bool = False
-    backend: str = Field(default="memory")
-    path: Optional[Path] = None
-    ttl_days: float = Field(default=7.0, ge=0.0)
+    db_path: Optional[Path] = None
+    ttl_seconds: int = Field(default=0, ge=0)
+    max_items: int = Field(default=0, ge=0)
 
 
 class CircuitBreakerConfig(BaseModel):
