@@ -14,11 +14,20 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from cache.sqlite_cache import CachedResponse, SqliteCache
+from net.circuit_breaker import CircuitBreaker
 from metrics.collector import get_metrics
 from utils.loggingx import get_logger
 
 LOGGER = get_logger("net.http_client")
 METRICS = get_metrics()
+
+
+class RetryLater(Exception):
+    """Raised when a host circuit breaker is open."""
+
+    def __init__(self, host: str) -> None:
+        self.host = host
+        super().__init__(f"Circuit breaker open for host {host}")
 
 class RequestLimiter:
     """Shared limiter coordinating synchronous and asynchronous HTTP request concurrency."""
@@ -156,6 +165,34 @@ class HttpClient:
         self._robots_cache: Dict[str, Tuple[robotparser.RobotFileParser, float]] = {}
         self._robots_lock = threading.Lock()
 
+        self._circuit_breaker_enabled = False
+        self._circuit_breaker_threshold = 0.5
+        self._circuit_breaker_window = 60
+        self._circuit_breaker_cool_down = 120
+        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
+        self._circuit_breaker_lock = threading.Lock()
+        circuit_breaker_cfg = self._cfg.get("circuit_breaker")
+        if isinstance(circuit_breaker_cfg, Mapping):
+            self._circuit_breaker_enabled = bool(circuit_breaker_cfg.get("enabled", False))
+            try:
+                self._circuit_breaker_threshold = float(
+                    circuit_breaker_cfg.get("threshold", self._circuit_breaker_threshold)
+                )
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
+            try:
+                self._circuit_breaker_window = int(
+                    circuit_breaker_cfg.get("window", self._circuit_breaker_window)
+                )
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
+            try:
+                self._circuit_breaker_cool_down = int(
+                    circuit_breaker_cfg.get("cool_down", self._circuit_breaker_cool_down)
+                )
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
+
     async def fetch_all(self, urls: List[str]) -> Dict[str, Tuple[int, str]]:
         """Fetch URLs concurrently with rate limits and retries."""
 
@@ -212,13 +249,19 @@ class HttpClient:
                 return response
 
             host = self._extract_host(url)
+            breaker = self._get_circuit_breaker(host)
+            if breaker is not None and breaker.is_open():
+                LOGGER.warning("cb_open host=%s", host)
+                raise RetryLater(host or "unknown")
             self._maybe_wait_sync(host)
-            status_response = self._perform_sync_request("GET", url, ua)
+            status_response = self._perform_sync_request("GET", url, ua, host)
             self._mark_sync(host)
 
             if status_response.status_code == httpx.codes.OK and self._cache_enabled:
                 self._write_cache("GET", url, status_response, b"")
             return status_response
+        except RetryLater:
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("GET %s unexpected error: %s", url, exc)
             response = self._error_response("GET", url, "unexpected_error")
@@ -241,10 +284,16 @@ class HttpClient:
                 return self._error_response("HEAD", url, "blocked_by_robots")
 
             host = self._extract_host(url)
+            breaker = self._get_circuit_breaker(host)
+            if breaker is not None and breaker.is_open():
+                LOGGER.warning("cb_open host=%s", host)
+                raise RetryLater(host or "unknown")
             self._maybe_wait_sync(host)
-            response = self._perform_sync_request("HEAD", url, ua)
+            response = self._perform_sync_request("HEAD", url, ua, host)
             self._mark_sync(host)
             return response
+        except RetryLater:
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("HEAD %s unexpected error: %s", url, exc)
             return self._error_response("HEAD", url, "unexpected_error")
@@ -295,6 +344,10 @@ class HttpClient:
                 return 0, ""
 
             host = self._extract_host(url)
+            breaker = self._get_circuit_breaker(host)
+            if breaker is not None and breaker.is_open():
+                LOGGER.warning("cb_open host=%s", host)
+                raise RetryLater(host or "unknown")
             semaphore = await self._per_host_semaphore(host)
             assert self._global_semaphore is not None  # sanity
             async with self._async_limit():
@@ -310,6 +363,10 @@ class HttpClient:
                             response = await self._async_client.get(url, headers=headers)
                             last_status = response.status_code
                             last_text = response.text
+                            if self._is_failure_status(response.status_code):
+                                self._record_failure(host, response.status_code)
+                            else:
+                                self._record_success(host)
                             duration = time.perf_counter() - start_request
                             if response.status_code in {429, 503} and attempt + 1 < self._retry_attempts:
                                 LOGGER.warning(
@@ -341,6 +398,7 @@ class HttpClient:
                             LOGGER.warning("GET %s timeout attempt=%s duration=%.3f error=%s", url, attempt + 1, duration, exc)
                             last_status = 0
                             last_text = ""
+                            self._record_failure(host, exc)
                             if attempt + 1 >= self._retry_attempts:
                                 break
                             await self._sleep_backoff_async(attempt)
@@ -352,6 +410,8 @@ class HttpClient:
                             )
                             last_status = 0
                             last_text = ""
+                            if isinstance(exc, httpx.ConnectError):
+                                self._record_failure(host, exc)
                             if attempt + 1 >= self._retry_attempts:
                                 break
                             await self._sleep_backoff_async(attempt)
@@ -369,6 +429,8 @@ class HttpClient:
                             labels={"kind": "http"},
                         )
                     return last_status, last_text
+        except RetryLater:
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("GET %s unexpected error: %s", url, exc)
             duration = time.perf_counter() - start
@@ -381,7 +443,7 @@ class HttpClient:
             )
             return 0, ""
 
-    def _perform_sync_request(self, method: str, url: str, ua: str) -> httpx.Response:
+    def _perform_sync_request(self, method: str, url: str, ua: str, host: Optional[str]) -> httpx.Response:
         headers = self._build_headers(ua)
         attempt = 0
         retries_used = 0
@@ -389,11 +451,16 @@ class HttpClient:
         start = time.perf_counter()
         endpoint = self._extract_host(url) or "unknown"
         method_name = method.upper()
+        host_key = host or self._extract_host(url)
         while attempt < self._retry_attempts:
             try:
                 with self._sync_limit():
                     response = self._sync_client.request(method, url, headers=headers)
                 last_response = response
+                if self._is_failure_status(response.status_code):
+                    self._record_failure(host_key, response.status_code)
+                else:
+                    self._record_success(host_key)
                 duration = time.perf_counter() - start
                 if response.status_code in {429, 503} and attempt + 1 < self._retry_attempts:
                     LOGGER.warning(
@@ -420,6 +487,7 @@ class HttpClient:
             except httpx.TimeoutException as exc:
                 duration = time.perf_counter() - start
                 LOGGER.warning("%s %s timeout attempt=%s duration=%.3f error=%s", method, url, attempt + 1, duration, exc)
+                self._record_failure(host_key, exc)
                 if attempt + 1 >= self._retry_attempts:
                     break
                 self._sleep_backoff_sync(attempt)
@@ -427,6 +495,8 @@ class HttpClient:
             except httpx.HTTPError as exc:
                 duration = time.perf_counter() - start
                 LOGGER.warning("%s %s http error attempt=%s duration=%.3f error=%s", method, url, attempt + 1, duration, exc)
+                if isinstance(exc, httpx.ConnectError):
+                    self._record_failure(host_key, exc)
                 if attempt + 1 >= self._retry_attempts:
                     break
                 self._sleep_backoff_sync(attempt)
@@ -641,6 +711,36 @@ class HttpClient:
             return
         with self._sync_rate_lock:
             self._sync_last_request[host] = time.monotonic()
+
+    def _get_circuit_breaker(self, host: Optional[str]) -> Optional[CircuitBreaker]:
+        if not self._circuit_breaker_enabled or not host:
+            return None
+        key = host.lower()
+        with self._circuit_breaker_lock:
+            breaker = self._circuit_breakers.get(key)
+            if breaker is None:
+                breaker = CircuitBreaker(
+                    key,
+                    self._circuit_breaker_threshold,
+                    self._circuit_breaker_window,
+                    self._circuit_breaker_cool_down,
+                )
+                self._circuit_breakers[key] = breaker
+            return breaker
+
+    def _record_success(self, host: Optional[str]) -> None:
+        breaker = self._get_circuit_breaker(host)
+        if breaker is not None:
+            breaker.record_success()
+
+    def _record_failure(self, host: Optional[str], reason: object) -> None:
+        breaker = self._get_circuit_breaker(host)
+        if breaker is not None:
+            breaker.record_failure(reason)
+
+    @staticmethod
+    def _is_failure_status(status_code: int) -> bool:
+        return status_code == 429 or 500 <= status_code < 600
 
     async def _sleep_backoff_async(self, attempt: int) -> None:
         delay = min(self._backoff_factor * (2 ** attempt), self._backoff_max)
