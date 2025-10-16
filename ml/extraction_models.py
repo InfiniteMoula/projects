@@ -11,8 +11,8 @@ This module implements ML-based extraction enhancement including:
 
 import copy
 import json
-import pickle
 import logging
+import pickle
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any, Set
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+
+from . import model_versioning
 
 if TYPE_CHECKING:
     from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
@@ -558,12 +560,30 @@ class ExtractionPatternLearner:
                 pickle.dump(models_to_save, f)
             _load_pickled_models.cache_clear()
             logger.info(f"Models saved to {model_file}")
+            model_versioning.save_metadata(
+                self.model_dir,
+                "extraction_models",
+                extra={
+                    "pattern_types": sorted(self.pattern_classifiers.keys()),
+                    "regressor_types": sorted(self.confidence_regressors.keys()),
+                    "training_examples": sum(len(v) for v in self.training_data.values()),
+                },
+                artifact_path=model_file.name,
+            )
         except Exception as e:
             logger.error(f"Failed to save models: {e}")
-    
+
     def load_models(self) -> bool:
         """Load trained models from disk."""
         model_file = self.model_dir / "extraction_models.pkl"
+
+        metadata = model_versioning.load_metadata(self.model_dir, "extraction_models")
+        compatibility = model_versioning.check_sklearn_compatibility(metadata)
+        if not compatibility.ok:
+            logger.warning(
+                "Skipping extraction model load due to incompatibility: %s", compatibility.reason
+            )
+            return False
 
         try:
             models = copy.deepcopy(_load_pickled_models(str(model_file)))
@@ -584,6 +604,7 @@ class ExtractionPatternLearner:
         self.training_data = models.get("training_data", {})
 
         logger.info(f"Models loaded from {model_file}")
+        model_versioning.record_successful_load(self.model_dir, "extraction_models")
         return True
 
 def create_extraction_learner(model_dir: str = "models") -> ExtractionPatternLearner:

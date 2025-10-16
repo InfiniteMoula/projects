@@ -22,6 +22,9 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize
 import warnings
+
+from ml import model_versioning
+
 warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
@@ -665,21 +668,38 @@ class MLParameterOptimizer:
             with open(model_file, 'wb') as f:
                 pickle.dump(data_to_save, f)
             logger.info(f"Optimizer models saved to {model_file}")
+            model_versioning.save_metadata(
+                self.model_dir,
+                "ml_optimizer",
+                extra={
+                    "history_records": len(self.optimization_history),
+                    "models_trained": bool(self.models_trained),
+                },
+                artifact_path=model_file.name,
+            )
         except Exception as e:
             logger.error(f"Failed to save optimizer models: {e}")
-    
+
     def load_models(self) -> bool:
         """Load trained models and history."""
         model_file = self.model_dir / "ml_optimizer.pkl"
-        
+
         if not model_file.exists():
             logger.info("No saved optimizer models found")
             return False
-        
+
+        metadata = model_versioning.load_metadata(self.model_dir, "ml_optimizer")
+        compatibility = model_versioning.check_sklearn_compatibility(metadata)
+        if not compatibility.ok:
+            logger.warning(
+                "Skipping optimizer model load due to incompatibility: %s", compatibility.reason
+            )
+            return False
+
         try:
             with open(model_file, 'rb') as f:
                 data = pickle.load(f)
-            
+
             self.models = data.get('models', self.models)
             self.scaler = data.get('scaler', StandardScaler())
             
@@ -699,11 +719,12 @@ class MLParameterOptimizer:
             
             self.objective_weights = data.get('objective_weights', self.objective_weights)
             self.models_trained = data.get('models_trained', False)
-            
+
             logger.info(f"Optimizer models loaded from {model_file}")
             logger.info(f"Loaded {len(self.optimization_history)} historical records")
+            model_versioning.record_successful_load(self.model_dir, "ml_optimizer")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to load optimizer models: {e}")
             return False

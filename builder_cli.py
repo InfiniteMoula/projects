@@ -21,9 +21,12 @@ from config.enrichment_config import load_enrichment_config
 
 import create_job
 from metrics.collector import get_metrics
+from config.budget_config import get_budget_thresholds
+
 from utils import budget_middleware, config, io, pipeline
 from utils.adaptive_controller import AdaptiveController, AdaptiveState
 from utils.ua import load_user_agent_pool
+from utils.directories import initialize_pipeline_directories
 
 try:
     from monitoring import prometheus_exporter
@@ -32,6 +35,9 @@ except ImportError:  # pragma: no cover - optional dependency
 
 LOGGER = logging.getLogger(__name__)
 METRICS = get_metrics()
+BUDGET_DEFAULTS = get_budget_thresholds()
+TIME_BUDGET_DEFAULT = int(BUDGET_DEFAULTS.time_budget_min or 0)
+RAM_BUDGET_DEFAULT = int(BUDGET_DEFAULTS.ram_mb or 0)
 
 
 def _deep_update(target: Dict[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
@@ -615,8 +621,11 @@ def _apply_adaptive_feedback(ctx: dict, batch_results: Sequence[dict]) -> None:
 def build_context(args, job):
     run_id = args.run_id or uuid.uuid4().hex[:12]
     outdir_path = Path(args.out).expanduser().resolve()
-    io.ensure_dir(outdir_path)
-    logs_dir = io.ensure_dir(outdir_path / "logs")
+    dir_map = dict(initialize_pipeline_directories(outdir_path))
+    logs_dir = dir_map.get("logs")
+    if logs_dir is None:
+        logs_dir = io.ensure_dir(outdir_path / "logs")
+        dir_map["logs"] = logs_dir
 
     input_path = None
     if args.input:
@@ -654,6 +663,7 @@ def build_context(args, job):
         "log_lock": threading.Lock(),
         "_fresh_outputs": set(),
         "profile": profile_name,
+        "directories": dir_map,
     }
     ctx["serp_timeout_sec"] = float(getattr(args, "serp_timeout_sec", 8.0))
     ctx["max_pages_per_domain"] = int(getattr(args, "max_pages_per_domain", 12))
@@ -1460,13 +1470,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='Maximum concurrent domains for crawling (overrides job config)')
     common.add_argument('--per-domain-rps', type=float, default=0.0,
                         help='Override crawl rate limit (requests per second per domain)')
-    common.add_argument('--time-budget-min', type=int, default=0)
-    common.add_argument('--workers', type=int, default=8)
+    common.add_argument(
+        '--time-budget-min',
+        type=int,
+        default=TIME_BUDGET_DEFAULT,
+        help=f'Maximum run duration in minutes (default: {TIME_BUDGET_DEFAULT})',
+    )
+    common.add_argument(
+        '--workers',
+        type=int,
+        default=8,
+        help='Maximum parallel workers for step execution (default: 8)',
+    )
     common.add_argument('--json', action='store_true')
     common.add_argument('--resume', action='store_true')
     common.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
     common.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
-    common.add_argument('--max-ram-mb', type=int, default=0)
+    common.add_argument(
+        '--max-ram-mb',
+        type=int,
+        default=RAM_BUDGET_DEFAULT,
+        help=f'Maximum RAM budget in MB (default: {RAM_BUDGET_DEFAULT} - 0 disables)',
+    )
     common.add_argument('--metrics-file', type=Path, help='Write pipeline metrics JSON to this file')
     common.add_argument('--prometheus-port', type=int, default=0,
                         help='Expose Prometheus metrics on this port (0 disables export)')
@@ -1557,7 +1582,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     batch_parser.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
     batch_parser.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
-    batch_parser.add_argument('--max-ram-mb', type=int, default=0, help='Maximum RAM budget in MB (0 = unlimited)')
+    batch_parser.add_argument(
+        '--max-ram-mb',
+        type=int,
+        default=RAM_BUDGET_DEFAULT,
+        help=f'Maximum RAM budget in MB (default: {RAM_BUDGET_DEFAULT} - 0 disables)',
+    )
     batch_parser.add_argument('--continue-on-error', action='store_true', help='Continue processing other NAF codes if one fails')
     batch_parser.add_argument('--json', action='store_true', help='Output results in JSON format')
     batch_parser.add_argument('--use-domains', dest='use_domains', action='store_true',
