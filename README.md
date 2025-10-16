@@ -1,5 +1,8 @@
 # Pipeline de données B2B françaises
 
+[![CI](https://github.com/infinitemoula/projects/actions/workflows/ci.yml/badge.svg)](https://github.com/infinitemoula/projects/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/infinitemoula/projects/main/.github/badges/coverage.json)](https://github.com/infinitemoula/projects)
+
 > Ce README s'appuie sur la checklist de [makeareadme.com](https://www.makeareadme.com/) pour couvrir toutes les informations utiles du projet.
 
 ## Sommaire
