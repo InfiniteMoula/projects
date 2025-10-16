@@ -124,10 +124,15 @@ class AiConfig(BaseModel):
 
     enabled: bool = False
     contacts: bool = False
+    fallback_extraction: bool = False
 
     @property
     def contacts_enabled(self) -> bool:
         return bool(self.enabled and self.contacts)
+
+    @property
+    def fallback_enabled(self) -> bool:
+        return bool(self.fallback_extraction)
 
 
 class DomainsConfig(BaseModel):

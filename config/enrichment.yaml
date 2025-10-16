@@ -133,3 +133,4 @@ embeddings:
 ai:
   enabled: false
   contacts: false
+  fallback_extraction: false
