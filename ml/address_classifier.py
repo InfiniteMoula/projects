@@ -7,8 +7,8 @@ for scraping operations, helping optimize address selection and processing.
 """
 
 import copy
-import pickle
 import logging
+import pickle
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+
+from . import model_versioning
 
 if TYPE_CHECKING:
     from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
@@ -613,6 +615,15 @@ class AddressSuccessClassifier:
             logger.info("No saved models found at %s", model_file)
             return False
 
+        metadata = model_versioning.load_metadata(self.model_dir, "address_classifier")
+        compatibility = model_versioning.check_sklearn_compatibility(metadata)
+        if not compatibility.ok:
+            logger.warning(
+                "Skipping address classifier load due to incompatibility: %s",
+                compatibility.reason,
+            )
+            return False
+
         try:
             models = copy.deepcopy(_load_pickled_models(str(model_file)))
         except FileNotFoundError:
@@ -637,6 +648,7 @@ class AddressSuccessClassifier:
         self.training_data = models.get("training_data", [])
 
         logger.info("Models loaded from %s", model_file)
+        model_versioning.record_successful_load(self.model_dir, "address_classifier")
         return True
     
     def _save_models(self):
@@ -657,6 +669,15 @@ class AddressSuccessClassifier:
                 pickle.dump(models_to_save, f)
             _load_pickled_models.cache_clear()
             logger.info(f"Models saved to {model_file}")
+            model_versioning.save_metadata(
+                self.model_dir,
+                "address_classifier",
+                extra={
+                    "training_examples": len(self.training_data),
+                    "features": list(models_to_save.keys()),
+                },
+                artifact_path=model_file.name,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to save models to %s: %s", model_file, exc)
 

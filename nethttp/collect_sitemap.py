@@ -5,6 +5,18 @@ import httpx
 from utils import budget_middleware, io
 from utils.http import HttpError, request_with_backoff
 from utils.state import SequentialRunState
+from config.budget_config import get_budget_thresholds
+
+BUDGET_DEFAULTS = get_budget_thresholds()
+
+
+def _resolve_budget(value, default):
+    if value is None:
+        return int(default or 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default or 0)
 
 
 def run(cfg, ctx):
@@ -22,8 +34,14 @@ def run(cfg, ctx):
     backoff_max = float(sitemap_cfg.get("backoff_max", 10.0))
 
     budgets_cfg = (cfg.get("budgets") or {})
-    max_requests = budgets_cfg.get("max_http_requests", 0)
-    max_bytes = budgets_cfg.get("max_http_bytes", 0)
+    if not isinstance(budgets_cfg, dict):
+        budgets_cfg = {}
+    max_requests = _resolve_budget(
+        budgets_cfg.get("max_http_requests"), BUDGET_DEFAULTS.max_http_requests
+    )
+    max_bytes = _resolve_budget(
+        budgets_cfg.get("max_http_bytes"), BUDGET_DEFAULTS.max_http_bytes
+    )
 
     state_path = os.path.join(out, "sitemap_state.json")
     state = SequentialRunState(state_path)

@@ -7,7 +7,21 @@ from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 
+from config.budget_config import get_budget_thresholds
+
 LOGGER = logging.getLogger("utils.budget_middleware")
+BUDGET_DEFAULTS = get_budget_thresholds()
+
+
+def _resolve_budget_limit(value: Any, default: Optional[int]) -> int:
+    """Return an integer budget limit falling back to *default* when necessary."""
+
+    if value is None:
+        return int(default or 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default or 0)
 
 
 class BudgetExceededError(RuntimeError):
@@ -106,8 +120,25 @@ class KPICalculator:
         """Calculate final KPI values from pipeline results."""
         # Extract metrics from step results
         total_duration = sum(r.get("duration_s", 0) for r in results)
-        total_lines = context.get("total_lines_processed", 0)
-        
+        total_lines = context.get("total_lines_processed")
+        if not isinstance(total_lines, (int, float)):
+            total_lines = 0
+
+        if not total_lines:
+            fallback_total = 0
+            for result in results:
+                out = result.get("out")
+                if isinstance(out, dict):
+                    rows_written = out.get("rows_written")
+                    if isinstance(rows_written, (int, float)):
+                        fallback_total += int(rows_written)
+            if fallback_total:
+                total_lines = fallback_total
+            else:
+                rows_from_context = context.get("rows_written")
+                if isinstance(rows_from_context, (int, float)):
+                    total_lines = int(rows_from_context)
+
         # Calculate actual KPI values
         actual_kpis = {
             "quality_score": self._extract_quality_score(results),
@@ -200,17 +231,34 @@ class KPICalculator:
 
 def create_budget_tracker(job_config: Dict[str, Any]) -> Optional[BudgetTracker]:
     """Create a budget tracker from job configuration."""
-    budgets = job_config.get("budgets", {})
-    
-    if not budgets:
+    budgets_cfg = job_config.get("budgets") or {}
+    if not budgets_cfg:
         LOGGER.info("No budgets configured, skipping budget tracking")
         return None
-    
+    if not isinstance(budgets_cfg, dict):
+        LOGGER.warning("Invalid budgets configuration type: %s", type(budgets_cfg))
+        budgets_cfg = {}
+
+    max_http_requests = _resolve_budget_limit(
+        budgets_cfg.get("max_http_requests"), BUDGET_DEFAULTS.max_http_requests
+    )
+    max_http_bytes = _resolve_budget_limit(
+        budgets_cfg.get("max_http_bytes"), BUDGET_DEFAULTS.max_http_bytes
+    )
+    time_budget_min = _resolve_budget_limit(
+        budgets_cfg.get("time_budget_min"), BUDGET_DEFAULTS.time_budget_min
+    )
+    ram_mb = _resolve_budget_limit(budgets_cfg.get("ram_mb"), BUDGET_DEFAULTS.ram_mb)
+
+    if not any([max_http_requests, max_http_bytes, time_budget_min, ram_mb]):
+        LOGGER.info("No budgets configured, skipping budget tracking")
+        return None
+
     return BudgetTracker(
-        max_http_requests=budgets.get("max_http_requests", 0),
-        max_http_bytes=budgets.get("max_http_bytes", 0),
-        time_budget_min=budgets.get("time_budget_min", 0),
-        ram_mb=budgets.get("ram_mb", 0),
+        max_http_requests=max_http_requests,
+        max_http_bytes=max_http_bytes,
+        time_budget_min=time_budget_min,
+        ram_mb=ram_mb,
     )
 
 
