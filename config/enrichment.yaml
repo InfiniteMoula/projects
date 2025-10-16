@@ -7,10 +7,10 @@ use_correlation: true
 use_metrics_export: false
 
 cache:
-  enabled: false
-  backend: "sqlite"
-  path: ".cache/http"
-  ttl_days: 7
+  enabled: true
+  db_path: ".cache/http.sqlite"
+  ttl_seconds: 604800
+  max_items: 200000
 
 circuit_breaker:
   enabled: false
