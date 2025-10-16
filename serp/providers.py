@@ -126,17 +126,21 @@ class BingProvider(SerpProvider):
     def search(self, query: str) -> List[Result]:
         url = self._build_url(query)
         provider_name = type(self).__name__
-        METRICS.increment_counter("requests_total", labels={"provider": provider_name, "kind": "serp"})
+        base_labels = {
+            "provider": provider_name,
+            "kind": "serp",
+            "group": f"serp:{provider_name}",
+        }
+        METRICS.increment_counter("requests_total", labels=base_labels)
         start = time.perf_counter()
         response = self._http.get(url)
         duration = time.perf_counter() - start
         METRICS.record_latency(f"serp:{provider_name}", duration)
         if response.status_code != httpx.codes.OK:
             LOGGER.warning("Bing returned status %s for %r", response.status_code, query)
-            METRICS.increment_counter(
-                "errors_total",
-                labels={"provider": provider_name, "kind": "serp", "status": str(response.status_code)},
-            )
+            error_labels = dict(base_labels)
+            error_labels["status"] = str(response.status_code)
+            METRICS.increment_counter("errors_total", labels=error_labels)
             return []
         html = response.text
         if not html:
@@ -187,17 +191,21 @@ class DuckDuckGoProvider(SerpProvider):
     def search(self, query: str) -> List[Result]:
         url = self._build_url(query)
         provider_name = type(self).__name__
-        METRICS.increment_counter("requests_total", labels={"provider": provider_name, "kind": "serp"})
+        base_labels = {
+            "provider": provider_name,
+            "kind": "serp",
+            "group": f"serp:{provider_name}",
+        }
+        METRICS.increment_counter("requests_total", labels=base_labels)
         start = time.perf_counter()
         response = self._http.get(url)
         duration = time.perf_counter() - start
         METRICS.record_latency(f"serp:{provider_name}", duration)
         if response.status_code != httpx.codes.OK:
             LOGGER.warning("DuckDuckGo returned status %s for %r", response.status_code, query)
-            METRICS.increment_counter(
-                "errors_total",
-                labels={"provider": provider_name, "kind": "serp", "status": str(response.status_code)},
-            )
+            error_labels = dict(base_labels)
+            error_labels["status"] = str(response.status_code)
+            METRICS.increment_counter("errors_total", labels=error_labels)
             return []
         html = response.text
         if not html:

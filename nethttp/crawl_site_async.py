@@ -261,7 +261,7 @@ async def _crawl_target(
                 "GET",
                 response.status_code,
                 duration,
-                labels={"kind": "crawler"},
+                labels={"kind": "crawler", "group": f"crawler:{host}"},
             )
         except httpx.HTTPError as exc:
             duration = time.perf_counter() - request_start
@@ -270,7 +270,11 @@ async def _crawl_target(
                 "GET",
                 0,
                 duration,
-                labels={"kind": "crawler", "reason": "http_error"},
+                labels={
+                    "kind": "crawler",
+                    "reason": "http_error",
+                    "group": f"crawler:{host}",
+                },
             )
             stats["errors"] += 1
             if request_tracker:

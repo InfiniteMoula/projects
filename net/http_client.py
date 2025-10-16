@@ -224,16 +224,27 @@ class HttpClient:
                     response.extensions["from_cache"] = True
                     duration = time.perf_counter() - start
                     LOGGER.info("GET %s status=%s duration=%.3f source=cache", url, cached.status, duration)
-                    METRICS.record_cache_hit(endpoint, labels={"kind": "http"})
+                    METRICS.record_cache_hit(
+                        endpoint,
+                        labels={"kind": "http", "group": f"http:{endpoint}"},
+                    )
+                    call_labels = {
+                        "kind": "http",
+                        "source": "cache",
+                        "group": f"http:{endpoint}",
+                    }
                     METRICS.record_http_call(
                         endpoint,
                         "GET",
                         cached.status,
                         duration,
-                        labels={"kind": "http", "source": "cache"},
+                        labels=call_labels,
                     )
                     return response
-                METRICS.record_cache_miss(endpoint, labels={"kind": "http"})
+                METRICS.record_cache_miss(
+                    endpoint,
+                    labels={"kind": "http", "group": f"http:{endpoint}"},
+                )
 
             if not self.allow_fetch(url, ua):
                 LOGGER.warning("GET %s blocked by robots", url)
@@ -244,7 +255,7 @@ class HttpClient:
                     "GET",
                     response.status_code,
                     duration,
-                    labels={"kind": "http", "reason": "robots"},
+                    labels={"kind": "http", "reason": "robots", "group": f"http:{endpoint}"},
                 )
                 return response
 
@@ -271,7 +282,11 @@ class HttpClient:
                 "GET",
                 response.status_code,
                 duration,
-                labels={"kind": "http", "reason": "exception"},
+                labels={
+                    "kind": "http",
+                    "reason": "exception",
+                    "group": f"http:{endpoint}",
+                },
             )
             return response
 
@@ -319,16 +334,27 @@ class HttpClient:
                 if cached:
                     duration = time.perf_counter() - start
                     LOGGER.info("GET %s status=%s duration=%.3f source=cache", url, cached.status, duration)
-                    METRICS.record_cache_hit(endpoint, labels={"kind": "http"})
+                    METRICS.record_cache_hit(
+                        endpoint,
+                        labels={"kind": "http", "group": f"http:{endpoint}"},
+                    )
+                    call_labels = {
+                        "kind": "http",
+                        "source": "cache",
+                        "group": f"http:{endpoint}",
+                    }
                     METRICS.record_http_call(
                         endpoint,
                         "GET",
                         cached.status,
                         duration,
-                        labels={"kind": "http", "source": "cache"},
+                        labels=call_labels,
                     )
                     return cached.status, cached.payload.decode("utf-8", errors="replace")
-                METRICS.record_cache_miss(endpoint, labels={"kind": "http"})
+                METRICS.record_cache_miss(
+                    endpoint,
+                    labels={"kind": "http", "group": f"http:{endpoint}"},
+                )
 
             allowed = await asyncio.to_thread(self.allow_fetch, url, ua)
             if not allowed:
@@ -339,7 +365,7 @@ class HttpClient:
                     "GET",
                     0,
                     duration,
-                    labels={"kind": "http", "reason": "robots"},
+                    labels={"kind": "http", "reason": "robots", "group": f"http:{endpoint}"},
                 )
                 return 0, ""
 
@@ -387,7 +413,7 @@ class HttpClient:
                                 response.status_code,
                                 duration,
                                 retries=retries_used,
-                                labels={"kind": "http"},
+                                labels={"kind": "http", "group": f"http:{endpoint}"},
                             )
                             recorded = True
                             if response.status_code == httpx.codes.OK and self._cache_enabled:
@@ -426,7 +452,7 @@ class HttpClient:
                             last_status,
                             duration,
                             retries=retries_used,
-                            labels={"kind": "http"},
+                            labels={"kind": "http", "group": f"http:{endpoint}"},
                         )
                     return last_status, last_text
         except RetryLater:
@@ -439,7 +465,11 @@ class HttpClient:
                 "GET",
                 0,
                 duration,
-                labels={"kind": "http", "reason": "exception"},
+                labels={
+                    "kind": "http",
+                    "reason": "exception",
+                    "group": f"http:{endpoint}",
+                },
             )
             return 0, ""
 
@@ -481,7 +511,7 @@ class HttpClient:
                     response.status_code,
                     duration,
                     retries=retries_used,
-                    labels={"kind": "http"},
+                    labels={"kind": "http", "group": f"http:{endpoint}"},
                 )
                 return response
             except httpx.TimeoutException as exc:
@@ -510,7 +540,7 @@ class HttpClient:
                 last_response.status_code,
                 duration,
                 retries=retries_used,
-                labels={"kind": "http"},
+                labels={"kind": "http", "group": f"http:{endpoint}"},
             )
             return last_response
         duration = time.perf_counter() - start
@@ -521,7 +551,11 @@ class HttpClient:
             error_response.status_code,
             duration,
             retries=retries_used,
-            labels={"kind": "http", "reason": "request_failed"},
+            labels={
+                "kind": "http",
+                "reason": "request_failed",
+                "group": f"http:{endpoint}",
+            },
         )
         return error_response
 
