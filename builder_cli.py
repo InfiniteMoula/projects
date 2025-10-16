@@ -83,6 +83,7 @@ STEP_REGISTRY = {
     "enrich.domains": "enrich.enrich_domains:run",
     "enrich.contacts": "enrich.enrich_contacts:run",
     "enrich.linkedin": "enrich.enrich_linkedin:run",
+    "enrich.linkedin_clearbit_lite": "enrich.linkedin_clearbit_lite:run",
     "correlation.checks": "correlation.correlation:run",
     "scraper.maps": "scraper.maps_scraper:run",
     "quality.checks": "quality.checks:run",
@@ -129,6 +130,7 @@ STEP_DEPENDENCIES = {
     "enrich.domains": {"normalize.standardize", "enrich.address"},
     "enrich.contacts": {"enrich.domains"},
     "enrich.linkedin": {"normalize.standardize"},
+    "enrich.linkedin_clearbit_lite": {"normalize.standardize"},
     "correlation.checks": {"enrich.contacts"},
     "enrich.google_maps": {"enrich.address"},
     "scraper.maps": {"normalize.standardize", "enrich.address"},
@@ -149,6 +151,7 @@ ENRICHMENT_STEP_FLAGS = {
     "enrich.domains": "use_domains",
     "enrich.contacts": "use_contacts",
     "enrich.linkedin": "use_linkedin",
+    "enrich.linkedin_clearbit_lite": "use_linkedin",
     "correlation.checks": "use_correlation",
     "parse.contacts.ai": "use_contacts_ai",
     "metrics.export": "use_metrics_export",
@@ -177,6 +180,7 @@ PROFILES = {
         "enrich.dns",
         "enrich.email",
         "enrich.phone",
+        "enrich.linkedin_clearbit_lite",
         "quality.checks",
         "quality.score",
         "package.export",
@@ -237,6 +241,7 @@ PROFILES = {
         "enrich.dns",
         "enrich.email",
         "enrich.phone",
+        "enrich.linkedin_clearbit_lite",
         "quality.checks",
         "quality.score",
         "package.export",
@@ -303,6 +308,7 @@ STEP_OUTPUT_HINTS = {
     "monitor.scraper": ["metrics/summary.json", "metrics/scraper_stats.csv"],
     "finalize.premium_dataset": ["dataset.csv", "dataset.parquet"],
     "metrics.export": ["reports/report_metrics.json"],
+    "enrich.linkedin_clearbit_lite": ["linkedin_clearbit_lite.parquet"],
 }
 
 

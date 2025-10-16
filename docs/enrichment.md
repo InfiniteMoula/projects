@@ -10,8 +10,11 @@ Ce document resume les modules d'enrichissement zero-capital, explique la config
 - `enrich.contacts`  
   Explore les sites identifies afin d'extraire emails et numeros de telephone. La recherche repose sur des chemins favoris (contact, mentions legales, privacy...), peut suivre sitemap et robots.txt, et applique des heuristiques pour scorer les candidats (emails nominatif vs generique, type de numero, concordance ville). Les resultats sont exportes dans `contacts_enriched.{parquet,csv}`.
 
-- `enrich.linkedin`  
+- `enrich.linkedin`
   Cherche la page LinkedIn d'une entite sans gratter LinkedIn directement. Le module formule des requetes `site:linkedin.com/company` via les fournisseurs SERP configures puis score les resultats sur la similarite avec la denomination normalisee. Les correspondances retenues sont exportees dans `linkedin_enriched.{parquet,csv}` avec la source SERP et un score de confiance.
+
+- `enrich.linkedin_clearbit_lite`
+  Produit un enrichissement "LinkedIn & Clearbit" purement heuristique pour les profils standard et deep. A partir des domaines detectes, des mots-clefs et des codes NAF, le module simule `industry`, `employee_range` et `linkedin_url` puis enregistre le resultat dans `linkedin_clearbit_lite.{parquet,csv}`.
 
 Chaque module ecrit ses sorties dans le repertoire `outdir` du run et respecte les drapeaux `use_domains`, `use_contacts`, `use_linkedin` de la configuration.
 
