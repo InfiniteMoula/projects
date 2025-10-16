@@ -24,6 +24,7 @@ def test_default_enrichment_config_sections():
     assert cfg.embeddings.enabled is False
     assert cfg.ai.enabled is False
     assert cfg.ai.contacts is False
+    assert cfg.ai.fallback_extraction is False
 
 
 def test_enrichment_config_defaults_when_missing(tmp_path):
@@ -37,3 +38,4 @@ def test_enrichment_config_defaults_when_missing(tmp_path):
     assert cfg.circuit_breaker.enabled is False
     assert cfg.embeddings.enabled is False
     assert cfg.ai.contacts is False
+    assert cfg.ai.fallback_extraction is False

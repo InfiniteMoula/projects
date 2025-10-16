@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - defensive
 
 from net.http_client import HttpClient
 from net.http_client import RequestLimiter
+from ai import extract_contacts as extract_contacts_with_llm
 from constants import GENERIC_EMAIL_DOMAINS as BASE_GENERIC_EMAIL_DOMAINS
 from constants import GENERIC_EMAIL_PREFIXES as BASE_GENERIC_EMAIL_PREFIXES
 from utils import scoring
@@ -285,6 +286,9 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
     use_sitemaps = bool(cfg.get("use_sitemap", True))
     use_robots = bool(cfg.get("use_robots", True))
     validate_mx = bool(cfg.get("validate_mx"))
+    ai_fallback_enabled = bool(
+        cfg.get("_ai_fallback_enabled") or cfg.get("ai_fallback_extraction")
+    )
     page_paths = tuple(cfg.get("paths", DEFAULT_PATHS))
     max_pages = int(cfg.get("max_pages_per_site", DEFAULT_MAX_PAGES))
     sitemap_limit = int(cfg.get("sitemap_limit", DEFAULT_SITEMAP_LIMIT))
@@ -371,6 +375,8 @@ def _process_contacts_serial(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> Tup
                     html=body,
                     company_domain=company_domain,
                     norm_city=norm_city,
+                    fallback_enabled=ai_fallback_enabled,
+                    fallback_hints={"url": url},
                 )
                 linkedin_links.update(linkedins)
 
@@ -568,20 +574,49 @@ def _extract_contacts_from_html(
     html: str,
     company_domain: str,
     norm_city: str,
+    fallback_enabled: bool = False,
+    fallback_hints: Optional[Mapping[str, object]] = None,
 ) -> Tuple[List[Tuple[str, bool, bool]], List[Tuple[str, NumberType, bool]], Set[str]]:
-    soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
 
-    text_content = soup.get_text(" ", strip=True)
-    href_text = " ".join(a.get("href", "") for a in soup.find_all("a"))
-    combined = f"{text_content} {href_text}"
-    deobfuscated = _deobfuscate(combined)
+        text_content = soup.get_text(" ", strip=True)
+        href_text = " ".join(a.get("href", "") for a in soup.find_all("a"))
+        combined = f"{text_content} {href_text}"
+        deobfuscated = _deobfuscate(combined)
 
-    emails = _extract_emails(deobfuscated, company_domain)
-    phones = _extract_phones(deobfuscated, norm_city)
-    linkedins = set(match.group(0) for match in LINKEDIN_PATTERN.finditer(combined))
-    return emails, phones, linkedins
+        emails = _extract_emails(deobfuscated, company_domain)
+        phones = _extract_phones(deobfuscated, norm_city)
+        linkedins = set(match.group(0) for match in LINKEDIN_PATTERN.finditer(combined))
+        return emails, phones, linkedins
+    except Exception as exc:
+        if not fallback_enabled:
+            raise
+
+        hints: Dict[str, object] = {
+            "url": url,
+            "company_domain": company_domain,
+            "city": norm_city,
+            "error": str(exc),
+        }
+        if fallback_hints:
+            hints.update(fallback_hints)
+
+        LOGGER.warning(
+            "HTML parsing failed for %s; attempting AI fallback", url, exc_info=LOGGER.isEnabledFor(logging.DEBUG)
+        )
+
+        try:
+            payload = extract_contacts_with_llm(html, hints)
+        except Exception as fallback_exc:  # pragma: no cover - defensive
+            LOGGER.error(
+                "AI fallback extraction failed for %s: %s", url, fallback_exc
+            )
+            raise exc
+
+        return _normalise_llm_contacts(payload, company_domain, norm_city)
 
 
 def _deobfuscate(text: str) -> str:
@@ -590,6 +625,38 @@ def _deobfuscate(text: str) -> str:
         result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     result = result.replace("[at]", "@").replace("(at)", "@")
     return result
+
+
+def _normalise_llm_contacts(
+    payload: Mapping[str, object] | None,
+    company_domain: str,
+    norm_city: str,
+) -> Tuple[List[Tuple[str, bool, bool]], List[Tuple[str, NumberType, bool]], Set[str]]:
+    if not isinstance(payload, Mapping):
+        return [], [], set()
+
+    email_candidates: List[Tuple[str, bool, bool]] = []
+    for raw_email in _normalize_items(payload.get("emails")):
+        sanitized = _sanitize_email(str(raw_email))
+        if not _is_probable_email(sanitized):
+            continue
+        local, _, domain = sanitized.partition("@")
+        on_domain = bool(company_domain and domain.endswith(company_domain))
+        email_candidates.append((sanitized, on_domain, _is_nominative_local(local)))
+
+    phone_inputs = " ".join(_normalize_items(payload.get("phones")))
+    phone_candidates = _extract_phones(phone_inputs, norm_city) if phone_inputs else []
+
+    linkedin_raw = payload.get("linkedin")
+    if not linkedin_raw:
+        linkedin_raw = payload.get("linkedins")
+    linkedin_candidates = {
+        str(item).strip()
+        for item in _normalize_items(linkedin_raw)
+        if str(item).strip()
+    }
+
+    return email_candidates, phone_candidates, linkedin_candidates
 
 
 def _extract_emails(text: str, company_domain: str) -> List[Tuple[str, bool, bool]]:
@@ -759,7 +826,10 @@ def run(cfg: Dict, ctx: Dict) -> Dict[str, object]:
             logger.info("enrich.contacts skipped: empty dataset (%s)", source_path.name)
         return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
 
-    contacts_cfg_raw = (ctx.get("enrichment_config") or {}).get("contacts") or {}
+    enrichment_cfg = ctx.get("enrichment_config") or {}
+    contacts_cfg_raw = (
+        enrichment_cfg.get("contacts") if isinstance(enrichment_cfg, Mapping) else getattr(enrichment_cfg, "contacts", {})
+    ) or {}
     if hasattr(contacts_cfg_raw, "model_dump"):
         contacts_cfg = dict(contacts_cfg_raw.model_dump())
     elif hasattr(contacts_cfg_raw, "dict"):
@@ -768,6 +838,22 @@ def run(cfg: Dict, ctx: Dict) -> Dict[str, object]:
         contacts_cfg = dict(contacts_cfg_raw)
     else:
         contacts_cfg = dict(contacts_cfg_raw or {})
+
+    ai_cfg_raw = (
+        enrichment_cfg.get("ai")
+        if isinstance(enrichment_cfg, Mapping)
+        else getattr(enrichment_cfg, "ai", None)
+    )
+    ai_cfg_dict: Dict[str, Any] = {}
+    if ai_cfg_raw is not None:
+        if hasattr(ai_cfg_raw, "model_dump"):
+            ai_cfg_dict = dict(ai_cfg_raw.model_dump())
+        elif hasattr(ai_cfg_raw, "dict"):
+            ai_cfg_dict = dict(ai_cfg_raw.dict())
+        elif isinstance(ai_cfg_raw, Mapping):
+            ai_cfg_dict = dict(ai_cfg_raw)
+    if ai_cfg_dict.get("fallback_extraction"):
+        contacts_cfg["_ai_fallback_enabled"] = True
 
     if isinstance(cfg, Mapping):
         overrides = {}
