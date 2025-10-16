@@ -6,6 +6,8 @@ import importlib
 import logging
 from typing import Callable, Iterable, Mapping, MutableMapping, Optional, Sequence
 
+from utils.logging_filters import SensitiveDataFilter
+
 LOGGER_NAME = "builder.pipeline"
 
 
@@ -48,6 +50,8 @@ def configure_logging(verbose: bool = False, debug: bool = False) -> logging.Log
                 datefmt="%Y-%m-%dT%H:%M:%S",
             )
         handler.setFormatter(formatter)
+        if not any(isinstance(filt, SensitiveDataFilter) for filt in handler.filters):
+            handler.addFilter(SensitiveDataFilter())
         logger.addHandler(handler)
     else:
         for handler in logger.handlers:
@@ -64,6 +68,8 @@ def configure_logging(verbose: bool = False, debug: bool = False) -> logging.Log
                     datefmt="%Y-%m-%dT%H:%M:%S",
                 )
             handler.setFormatter(formatter)
+            if not any(isinstance(filt, SensitiveDataFilter) for filt in handler.filters):
+                handler.addFilter(SensitiveDataFilter())
     return logger
 
 

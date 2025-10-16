@@ -1094,6 +1094,13 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
     logger = logger or pipeline.configure_logging(args.verbose, getattr(args, 'debug', False))
     ctx = build_context(args, job)
     ctx['logger'] = logger
+    missing_env = config.validate_required_env(ctx.get('env', {}))
+    if missing_env:
+        message = (
+            "Missing critical environment variables: "
+            + ", ".join(missing_env)
+        )
+        raise config.MissingSecretError(message)
     METRICS.reset()
 
     steps_sorted = topo_sorted(steps, logger)

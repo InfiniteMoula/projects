@@ -6,6 +6,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from utils.logging_filters import SensitiveDataFilter
+
 _DEFAULT_LEVEL = logging.INFO
 
 
@@ -49,6 +51,12 @@ def get_logger(name: str, level: int = _DEFAULT_LEVEL) -> logging.Logger:
         handler.setLevel(level)
         formatter = JsonFormatter()
         handler.setFormatter(formatter)
+        if not any(isinstance(filt, SensitiveDataFilter) for filt in handler.filters):
+            handler.addFilter(SensitiveDataFilter())
         handler._loggingx_json = True  # type: ignore[attr-defined]
         logger.addHandler(handler)
+    else:
+        for handler in logger.handlers:
+            if not any(isinstance(filt, SensitiveDataFilter) for filt in handler.filters):
+                handler.addFilter(SensitiveDataFilter())
     return logger
