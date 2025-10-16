@@ -103,14 +103,17 @@ class Metrics:
         if labels:
             base_labels.update({str(k): str(v) for k, v in labels.items()})
 
+        status_str = "0" if status_code <= 0 else str(int(status_code))
+        base_labels.setdefault("status", status_str)
+
         self.increment_counter("requests_total", labels=base_labels)
         if status_code >= 400 or status_code <= 0:
             self.increment_counter("errors_total", labels=base_labels)
         if retries > 0:
             self.increment_counter("retries_total", amount=retries, labels=base_labels)
 
-        group = base_labels.get("group") or endpoint_key
-        self.record_latency(str(group), duration_seconds)
+        group = str(base_labels.get("group") or endpoint_key)
+        self.record_latency(group, duration_seconds)
 
     def snapshot(self) -> Dict[str, object]:
         """Return a snapshot of counters, latency distributions and resources."""
