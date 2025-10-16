@@ -23,6 +23,7 @@ data/
 *.csv
 *.parquet
 *.json
+!/.github/badges/coverage.json
 *.xlsx
 *.tsv
 
