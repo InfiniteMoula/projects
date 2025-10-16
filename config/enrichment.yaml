@@ -13,10 +13,10 @@ cache:
   max_items: 200000
 
 circuit_breaker:
-  enabled: false
-  failure_threshold: 5
-  recovery_time_seconds: 180
-  cooldown_seconds: 60
+  enabled: true
+  threshold: 0.5
+  window: 60
+  cool_down: 120
 
 domains:
   # SERP providers used to discover company domains (evaluated in this order).
