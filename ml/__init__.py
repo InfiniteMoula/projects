@@ -7,7 +7,7 @@ This package provides ML-based components for:
 - Automated parameter tuning and optimization
 """
 
-from .extraction_models import (
+from .extraction_models import (  # noqa: F401
     ExtractionFeatures,
     ExtractionResult,
     FeatureExtractor,
@@ -15,7 +15,7 @@ from .extraction_models import (
     create_extraction_learner
 )
 
-from .address_classifier import (
+from .address_classifier import (  # noqa: F401
     AddressFeatures,
     AddressPrediction,
     AddressFeatureExtractor,
@@ -23,35 +23,56 @@ from .address_classifier import (
     create_address_classifier
 )
 
-from .ml_optimizer import (
-    OptimizationResult,
-    PerformanceMetrics,
-    OptimizationHistory,
-    ParameterSpace,
-    MLParameterOptimizer,
-    create_ml_optimizer
+try:  # Optional component – not available in all distributions.
+    from .ml_optimizer import (  # type: ignore  # noqa: F401
+        OptimizationResult,
+        PerformanceMetrics,
+        OptimizationHistory,
+        ParameterSpace,
+        MLParameterOptimizer,
+        create_ml_optimizer
+    )
+except ModuleNotFoundError:  # pragma: no cover - optional dependency.
+    OptimizationResult = PerformanceMetrics = OptimizationHistory = ParameterSpace = None  # type: ignore  # noqa: E501
+    MLParameterOptimizer = create_ml_optimizer = None  # type: ignore
+
+from .lead_score import (  # noqa: F401
+    LeadScoreBreakdown,
+    LeadScoreWeights,
+    DEFAULT_WEIGHTS,
+    compute_lead_score,
+    add_business_score,
 )
 
 __all__ = [
     # Extraction models
     'ExtractionFeatures',
-    'ExtractionResult', 
+    'ExtractionResult',
     'FeatureExtractor',
     'ExtractionPatternLearner',
     'create_extraction_learner',
-    
+
     # Address classifier
     'AddressFeatures',
     'AddressPrediction',
-    'AddressFeatureExtractor', 
+    'AddressFeatureExtractor',
     'AddressSuccessClassifier',
     'create_address_classifier',
-    
-    # ML optimizer
-    'OptimizationResult',
-    'PerformanceMetrics',
-    'OptimizationHistory',
-    'ParameterSpace',
-    'MLParameterOptimizer',
-    'create_ml_optimizer'
+
+    # Lead scoring
+    'LeadScoreBreakdown',
+    'LeadScoreWeights',
+    'DEFAULT_WEIGHTS',
+    'compute_lead_score',
+    'add_business_score',
 ]
+
+if OptimizationResult is not None:  # pragma: no branch - simple runtime guard.
+    __all__.extend([
+        'OptimizationResult',
+        'PerformanceMetrics',
+        'OptimizationHistory',
+        'ParameterSpace',
+        'MLParameterOptimizer',
+        'create_ml_optimizer',
+    ])
