@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping, Sequence
 
 from dotenv import dotenv_values
 
@@ -18,6 +18,16 @@ class EnvLoadError(RuntimeError):
 
 class MissingSecretError(RuntimeError):
     """Raised when a required configuration value is absent."""
+
+
+CRITICAL_ENV_VARS: Mapping[str, str] = {
+    "APIFY_API_TOKEN": "required to authenticate with Apify actors",
+    "HUNTER_API_KEY": "required for email enrichment and verification",
+}
+
+CRITICAL_ENV_GROUPS: Sequence[tuple[Iterable[str], str]] = (
+    (("HTTP_PROXY", "HTTPS_PROXY", "PROXY_URL"), "proxy configuration"),
+)
 
 
 def _default_root() -> Path:
@@ -56,3 +66,19 @@ def require(env: Mapping[str, str], key: str, hint: str = "") -> str:
         LOGGER.error(message)
         raise MissingSecretError(message)
     return value
+
+
+def validate_required_env(env: Mapping[str, str]) -> list[str]:
+    """Return a list of missing critical environment variables."""
+
+    missing: list[str] = []
+    for key, hint in CRITICAL_ENV_VARS.items():
+        if not env.get(key):
+            missing.append(f"{key} ({hint})")
+
+    for candidates, description in CRITICAL_ENV_GROUPS:
+        if not any(env.get(candidate) for candidate in candidates):
+            formatted = ", ".join(sorted(set(str(option) for option in candidates)))
+            missing.append(f"{description}: set one of [{formatted}]")
+
+    return missing

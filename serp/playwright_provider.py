@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import Browser, Page, Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
 
+from monitoring.playwright_instrumentation import PlaywrightSessionMetrics
 from serp.providers import Result, SerpProvider
 
 LOGGER = logging.getLogger("serp.playwright_provider")
@@ -107,6 +108,9 @@ class PlaywrightSerpProvider(SerpProvider):
         browser: Browser | None = None
         context = None
         page: Page | None = None
+        metrics = PlaywrightSessionMetrics(self.ENGINE or "unknown", operation="serp_search")
+        status = "success"
+        results: List[Result] = []
 
         try:
             playwright = await async_playwright().start()
@@ -121,6 +125,7 @@ class PlaywrightSerpProvider(SerpProvider):
                 await context.set_extra_http_headers(self._extra_headers)
 
             page = await context.new_page()
+            metrics.attach(page)
             await page.goto(search_url, wait_until=self._wait_until, timeout=self._navigation_timeout_ms)
             await self._after_navigation(page)
             if self._wait_after_navigation_ms:
@@ -129,13 +134,18 @@ class PlaywrightSerpProvider(SerpProvider):
                 await page.wait_for_selector(self.WAIT_FOR_SELECTOR, timeout=self._navigation_timeout_ms)
             html = await page.content()
             base_url = page.url
+            results = self._parse_results(html, base_url)
         except PlaywrightTimeoutError:
+            status = "timeout"
             LOGGER.warning("Playwright %s timed out for query %r", self.ENGINE, query)
-            return []
         except Exception as exc:
+            status = "error"
             LOGGER.warning("Playwright %s failed for %r: %s", self.ENGINE, query, exc)
-            return []
         finally:
+            try:
+                await metrics.finalise(page, status=status)
+            except Exception:  # pragma: no cover - defensive
+                LOGGER.debug("Playwright metrics finalisation failed", exc_info=True)
             if page is not None:
                 await page.close()
             if context is not None:
@@ -145,7 +155,7 @@ class PlaywrightSerpProvider(SerpProvider):
             if playwright is not None:
                 await playwright.stop()
 
-        return self._parse_results(html, base_url)
+        return results
 
     def _parse_results(self, html: str, base_url: str) -> List[Result]:
         soup = BeautifulSoup(html, "lxml")
