@@ -85,6 +85,51 @@ class EmbeddingsConfig(BaseModel):
     model: str = "all-MiniLM-L6-v2"
 
 
+class CacheConfig(BaseModel):
+    """Generic cache configuration shared across enrichment components."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    backend: str = Field(default="memory")
+    path: Optional[Path] = None
+    ttl_days: float = Field(default=7.0, ge=0.0)
+
+
+class CircuitBreakerConfig(BaseModel):
+    """Circuit breaker tuning for long-running enrichment workflows."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    failure_threshold: int = Field(default=5, ge=1)
+    recovery_time_seconds: float = Field(default=120.0, ge=0.0)
+    cooldown_seconds: float = Field(default=30.0, ge=0.0)
+
+
+class GlobalEmbeddingsConfig(BaseModel):
+    """Top-level embedding switches applied to downstream components."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    model: str = "all-MiniLM-L6-v2"
+
+
+class AiConfig(BaseModel):
+    """Controls AI-assisted enrichment capabilities."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    contacts: bool = False
+
+    @property
+    def contacts_enabled(self) -> bool:
+        return bool(self.enabled and self.contacts)
+
+
 class DomainsConfig(BaseModel):
     """Domain discovery enrichment settings."""
 
@@ -250,10 +295,15 @@ class EnrichmentConfig(BaseModel):
     use_contacts: bool = True
     use_linkedin: bool = True
     use_correlation: bool = True
+    use_metrics_export: bool = False
     domains: DomainsConfig = Field(default_factory=DomainsConfig)
     contacts: ContactsConfig = Field(default_factory=ContactsConfig)
     linkedin: LinkedinConfig = Field(default_factory=LinkedinConfig)
     adaptive: AdaptiveConfig = Field(default_factory=AdaptiveConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+    circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    embeddings: GlobalEmbeddingsConfig = Field(default_factory=GlobalEmbeddingsConfig)
+    ai: AiConfig = Field(default_factory=AiConfig)
 
 
 @lru_cache(maxsize=1)
@@ -282,7 +332,11 @@ def load_enrichment_config(path: str | Path = "config/enrichment.yaml") -> Enric
 
 
 __all__ = [
+    "AiConfig",
+    "CacheConfig",
+    "CircuitBreakerConfig",
     "EmbeddingsConfig",
+    "GlobalEmbeddingsConfig",
     "ContactsConfig",
     "AdaptiveConfig",
     "DomainsConfig",

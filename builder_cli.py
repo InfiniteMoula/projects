@@ -11,7 +11,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 import threading
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from pathlib import Path
 
 import psutil
@@ -32,6 +32,19 @@ except ImportError:  # pragma: no cover - optional dependency
 
 LOGGER = logging.getLogger(__name__)
 METRICS = get_metrics()
+
+
+def _deep_update(target: Dict[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    for key, value in updates.items():
+        if isinstance(value, Mapping):
+            current = target.get(key)
+            if isinstance(current, dict):
+                _deep_update(current, value)
+            else:
+                target[key] = copy.deepcopy(dict(value))
+        else:
+            target[key] = copy.deepcopy(value)
+    return target
 
 
 STEP_REGISTRY = {
@@ -75,6 +88,7 @@ STEP_REGISTRY = {
     "quality.clean_contacts.final": "quality.clean_contacts:run",
     "monitor.scraper": "monitor.monitor_scraper:run",
     "package.export": "package.exporter:run",
+    "metrics.export": "metrics.exporter:run",
     "finalize.premium_dataset": "utils.filters:run_finalize_premium_dataset",
 }
 
@@ -121,6 +135,7 @@ STEP_DEPENDENCIES = {
     "quality.clean_contacts.final": {"parse.contacts.final"},
     "monitor.scraper": {"quality.clean_contacts.final"},
     "package.export": {"quality.score"},
+    "metrics.export": {"quality.score"},
     "finalize.premium_dataset": {"package.export"},
 }
 
@@ -129,6 +144,8 @@ ENRICHMENT_STEP_FLAGS = {
     "enrich.contacts": "use_contacts",
     "enrich.linkedin": "use_linkedin",
     "correlation.checks": "use_correlation",
+    "parse.contacts.ai": "use_contacts_ai",
+    "metrics.export": "use_metrics_export",
 }
 
 PROFILES = {
@@ -170,6 +187,19 @@ PROFILES = {
         "enrich.linkedin",
         "quality.checks",
         "quality.score",
+        "package.export",
+    ],
+    "standard_nocapital_v2": [
+        "dumps.collect",
+        "api.collect",
+        "normalize.standardize",
+        "enrich.address",
+        "enrich.domains",
+        "enrich.contacts",
+        "correlation.checks",
+        "quality.checks",
+        "quality.score",
+        "metrics.export",
         "package.export",
     ],
     "hybrid": [
@@ -226,6 +256,32 @@ PROFILES = {
 }
 
 
+PROFILE_FEATURE_OVERRIDES = {
+    "standard_nocapital_v2": {
+        "flags": {
+            "use_correlation": True,
+            "use_metrics_export": True,
+        },
+        "config": {
+            "cache": {
+                "enabled": True,
+                "backend": "sqlite",
+            },
+            "circuit_breaker": {
+                "enabled": True,
+            },
+            "embeddings": {
+                "enabled": False,
+            },
+            "ai": {
+                "enabled": False,
+                "contacts": False,
+            },
+        },
+    },
+}
+
+
 STEP_OUTPUT_HINTS = {
     "http.serp": ["serp/serp_results.parquet"],
     "crawl.site": ["crawl/pages.parquet"],
@@ -240,6 +296,7 @@ STEP_OUTPUT_HINTS = {
     "headless.collect_fallback": ["headless/pages_dynamic.parquet"],
     "monitor.scraper": ["metrics/summary.json", "metrics/scraper_stats.csv"],
     "finalize.premium_dataset": ["dataset.csv", "dataset.parquet"],
+    "metrics.export": ["reports/report_metrics.json"],
 }
 
 
@@ -568,6 +625,8 @@ def build_context(args, job):
             raise FileNotFoundError(f"Input path not found: {input_candidate}")
         input_path = input_candidate
 
+    profile_name = getattr(args, "profile", None) or job.get("profile")
+
     ctx = {
         "run_id": run_id,
         "outdir": str(outdir_path),
@@ -594,6 +653,7 @@ def build_context(args, job):
         "parallel_mode": getattr(args, 'parallel_mode', 'thread'),
         "log_lock": threading.Lock(),
         "_fresh_outputs": set(),
+        "profile": profile_name,
     }
     ctx["serp_timeout_sec"] = float(getattr(args, "serp_timeout_sec", 8.0))
     ctx["max_pages_per_domain"] = int(getattr(args, "max_pages_per_domain", 12))
@@ -647,13 +707,48 @@ def build_context(args, job):
         "use_contacts": enrichment_cfg.use_contacts,
         "use_linkedin": enrichment_cfg.use_linkedin,
         "use_correlation": getattr(enrichment_cfg, "use_correlation", True),
+        "use_metrics_export": getattr(enrichment_cfg, "use_metrics_export", False),
+        "use_contacts_ai": enrichment_cfg.ai.contacts_enabled,
     }
+    enrichment_config = enrichment_cfg.model_dump()
+
+    profile_overrides = PROFILE_FEATURE_OVERRIDES.get(profile_name or "")
+    if profile_overrides:
+        flags.update(profile_overrides.get("flags", {}))
+        config_overrides = profile_overrides.get("config") or {}
+        if isinstance(config_overrides, Mapping):
+            _deep_update(enrichment_config, config_overrides)
+
     for flag_name in flags:
         override = getattr(args, flag_name, None)
         if override is not None:
             flags[flag_name] = bool(override)
-    enrichment_config = enrichment_cfg.model_dump()
-    enrichment_config.update(flags)
+
+    for key in ("use_domains", "use_contacts", "use_linkedin", "use_correlation", "use_metrics_export"):
+        enrichment_config[key] = bool(flags.get(key, False))
+
+    ai_cfg = enrichment_config.get("ai") or {}
+    if not isinstance(ai_cfg, dict):
+        ai_cfg = {}
+    ai_cfg["contacts"] = bool(flags.get("use_contacts_ai", False))
+    if ai_cfg["contacts"]:
+        ai_cfg["enabled"] = True
+    else:
+        ai_cfg["enabled"] = bool(ai_cfg.get("enabled", False) and flags.get("use_contacts_ai", False))
+    enrichment_config["ai"] = ai_cfg
+    flags["use_contacts_ai"] = bool(ai_cfg.get("enabled") and ai_cfg.get("contacts"))
+
+    embeddings_cfg = enrichment_config.get("embeddings")
+    if isinstance(embeddings_cfg, Mapping):
+        domains_cfg = enrichment_config.setdefault("domains", {})
+        if not isinstance(domains_cfg, dict):
+            domains_cfg = {}
+            enrichment_config["domains"] = domains_cfg
+        domain_embeddings = domains_cfg.setdefault("embeddings", {})
+        if not isinstance(domain_embeddings, dict):
+            domain_embeddings = {}
+            domains_cfg["embeddings"] = domain_embeddings
+        _deep_update(domain_embeddings, embeddings_cfg)
     adaptive_cfg = enrichment_cfg.adaptive
     if adaptive_cfg.enabled:
         domains_cfg = enrichment_config.setdefault("domains", {})
@@ -691,6 +786,8 @@ def build_context(args, job):
 
     ctx["enrichment_config"] = enrichment_config
     ctx["enrichment_flags"] = flags
+    ctx["cache_config"] = enrichment_config.get("cache", {})
+    ctx["circuit_breaker_config"] = enrichment_config.get("circuit_breaker", {})
 
     return ctx
 
@@ -895,6 +992,18 @@ def run_batch_jobs(args, logger=None):
             cmd_args.append("--use-linkedin")
         elif getattr(args, 'use_linkedin', None) is False:
             cmd_args.append("--no-linkedin")
+        if getattr(args, 'use_correlation', None) is True:
+            cmd_args.append("--use-correlation")
+        elif getattr(args, 'use_correlation', None) is False:
+            cmd_args.append("--no-correlation")
+        if getattr(args, 'use_contacts_ai', None) is True:
+            cmd_args.append("--use-contacts-ai")
+        elif getattr(args, 'use_contacts_ai', None) is False:
+            cmd_args.append("--no-contacts-ai")
+        if getattr(args, 'use_metrics_export', None) is True:
+            cmd_args.append("--use-metrics-export")
+        elif getattr(args, 'use_metrics_export', None) is False:
+            cmd_args.append("--no-metrics-export")
 
         try:
             start_time = time.time()
@@ -1395,12 +1504,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='Force-enable correlation scoring (overrides config)')
     common.add_argument('--no-correlation', dest='use_correlation', action='store_false',
                         help='Disable correlation scoring regardless of config')
+    common.add_argument('--use-contacts-ai', dest='use_contacts_ai', action='store_true',
+                        help='Force-enable AI-assisted contact enrichment (overrides config)')
+    common.add_argument('--no-contacts-ai', dest='use_contacts_ai', action='store_false',
+                        help='Disable AI-assisted contact enrichment')
+    common.add_argument('--use-metrics-export', dest='use_metrics_export', action='store_true',
+                        help='Export metrics as a pipeline step (overrides config)')
+    common.add_argument('--no-metrics-export', dest='use_metrics_export', action='store_false',
+                        help='Skip metrics export regardless of config')
     common.set_defaults(
         respect_robots=None,
         use_domains=None,
         use_contacts=None,
         use_linkedin=None,
         use_correlation=None,
+        use_contacts_ai=None,
+        use_metrics_export=None,
     )
 
 
@@ -1457,11 +1576,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               help='Force-enable correlation scoring for generated jobs')
     batch_parser.add_argument('--no-correlation', dest='use_correlation', action='store_false',
                               help='Disable correlation scoring for generated jobs')
+    batch_parser.add_argument('--use-contacts-ai', dest='use_contacts_ai', action='store_true',
+                              help='Force-enable AI-assisted contact enrichment for generated jobs')
+    batch_parser.add_argument('--no-contacts-ai', dest='use_contacts_ai', action='store_false',
+                              help='Disable AI-assisted contact enrichment for generated jobs')
+    batch_parser.add_argument('--use-metrics-export', dest='use_metrics_export', action='store_true',
+                              help='Export metrics as part of generated jobs')
+    batch_parser.add_argument('--no-metrics-export', dest='use_metrics_export', action='store_false',
+                              help='Disable metrics export for generated jobs')
     batch_parser.set_defaults(
         use_domains=None,
         use_contacts=None,
         use_linkedin=None,
         use_correlation=None,
+        use_contacts_ai=None,
+        use_metrics_export=None,
     )
 
     sub.add_parser('resume', parents=[common])

@@ -4,6 +4,19 @@ use_domains: true
 use_contacts: true
 use_linkedin: true
 use_correlation: true
+use_metrics_export: false
+
+cache:
+  enabled: false
+  backend: "sqlite"
+  path: ".cache/http"
+  ttl_days: 7
+
+circuit_breaker:
+  enabled: false
+  failure_threshold: 5
+  recovery_time_seconds: 180
+  cooldown_seconds: 60
 
 domains:
   # SERP providers used to discover company domains (evaluated in this order).
@@ -111,3 +124,12 @@ adaptive:
   max_concurrency: 60
   min_chunk: 300
   max_chunk: 1200
+
+embeddings:
+  enabled: false
+  threshold: 0.6
+  model: "all-MiniLM-L6-v2"
+
+ai:
+  enabled: false
+  contacts: false
