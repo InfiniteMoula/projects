@@ -43,6 +43,14 @@ from .lead_score import (  # noqa: F401
     compute_lead_score,
     add_business_score,
 )
+from .domain_predictor import (  # noqa: F401
+    DomainPrediction,
+    DomainPredictor,
+    DEFAULT_MODEL_PATH,
+    load_domain_predictor,
+    predict_best_domain,
+    train_domain_predictor,
+)
 
 __all__ = [
     # Extraction models
@@ -65,6 +73,14 @@ __all__ = [
     'DEFAULT_WEIGHTS',
     'compute_lead_score',
     'add_business_score',
+
+    # Domain predictor
+    'DomainPrediction',
+    'DomainPredictor',
+    'DEFAULT_MODEL_PATH',
+    'load_domain_predictor',
+    'predict_best_domain',
+    'train_domain_predictor',
 ]
 
 if OptimizationResult is not None:  # pragma: no branch - simple runtime guard.
