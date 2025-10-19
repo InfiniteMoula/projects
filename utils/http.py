@@ -6,17 +6,127 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping, Optional, Callable
+from functools import wraps
+from typing import (
+    Callable,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    TypeVar,
+)
 
 import httpx
 
 from utils import io
 
 LOGGER = logging.getLogger("utils.http")
+T = TypeVar("T")
 
 
 class HttpError(RuntimeError):
     """Raised when an HTTP operation fails."""
+
+
+def retry_on_network_error(
+    *,
+    max_attempts: int = 3,
+    initial_delay: float = 0.5,
+    backoff_factor: float = 2.0,
+    retry_statuses: Optional[Sequence[int]] = None,
+    retry_exceptions: Optional[Sequence[type[BaseException]]] = None,
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Retry a network call on transient errors with exponential backoff."""
+
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    if initial_delay < 0:
+        raise ValueError("initial_delay must be >= 0")
+    if backoff_factor < 1:
+        raise ValueError("backoff_factor must be >= 1")
+
+    default_statuses = (403, 408, 409, 425, 429, 500, 502, 503, 504)
+    retry_status_set = set(int(code) for code in (retry_statuses or default_statuses))
+
+    default_exceptions: list[type[BaseException]] = [HttpError, httpx.RequestError, TimeoutError]
+    try:
+        import requests as _requests  # type: ignore
+    except ImportError:  # pragma: no cover - optional dependency
+        _requests = None  # type: ignore
+    else:
+        default_exceptions.append(_requests.RequestException)  # type: ignore[attr-defined]
+
+    if retry_exceptions:
+        exception_types = tuple(set(list(default_exceptions) + list(retry_exceptions)))
+    else:
+        exception_types = tuple(default_exceptions)
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args: object, **kwargs: object) -> T:
+            attempt = 1
+            delay = initial_delay
+            while True:
+                try:
+                    result = func(*args, **kwargs)
+                except exception_types as exc:
+                    if attempt >= max_attempts:
+                        raise
+                    LOGGER.warning(
+                        "Retrying %s after %s (attempt %d/%d) in %.2fs",
+                        func.__name__,
+                        exc,
+                        attempt,
+                        max_attempts,
+                        delay,
+                    )
+                    if delay:
+                        time.sleep(delay)
+                    attempt += 1
+                    delay *= backoff_factor
+                    continue
+
+                status_code = getattr(result, "status_code", None)
+                if (
+                    isinstance(status_code, int)
+                    and status_code in retry_status_set
+                ):
+                    if attempt >= max_attempts:
+                        close_candidate = getattr(result, "close", None)
+                        if callable(close_candidate):
+                            try:
+                                close_candidate()
+                            except Exception:  # pragma: no cover - best effort cleanup
+                                pass
+                        raise HttpError(
+                            f"{func.__name__} returned HTTP {status_code} after {attempt} attempts"
+                        )
+                    LOGGER.warning(
+                        "Retrying %s due to HTTP %s (attempt %d/%d) in %.2fs",
+                        func.__name__,
+                        status_code,
+                        attempt,
+                        max_attempts,
+                        delay,
+                    )
+                    close_candidate = getattr(result, "close", None)
+                    if callable(close_candidate):
+                        try:
+                            close_candidate()
+                        except Exception:  # pragma: no cover - best effort cleanup
+                            pass
+                    if delay:
+                        time.sleep(delay)
+                    attempt += 1
+                    delay *= backoff_factor
+                    continue
+
+                return result
+
+        return wrapper
+
+    return decorator
 
 
 def request_with_backoff(
@@ -164,6 +274,7 @@ def stream_download(
     return io.atomic_write_iter(target, chunk_iter())
 
 
+@retry_on_network_error()
 def get_json(
     url: str,
     *,
