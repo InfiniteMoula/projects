@@ -11,7 +11,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import pandas as pd
 from pandas.api.types import is_list_like
 
+from .validation import FieldValidation, validate_email
 from utils import io
+from utils.email_validation import SMTPVerificationResult
 from utils.url import registered_domain
 
 EMAIL_DOMAIN_RE = re.compile(r"^[^@]+@([A-Za-z0-9.-]+)$")
@@ -121,6 +123,18 @@ def run(cfg: dict, ctx: dict) -> dict:
         if logger:
             logger.info("clean_contacts: no contacts to clean (empty input)")
         return {"status": "SKIPPED", "reason": "EMPTY_CONTACTS"}
+
+    smtp_cfg = {}
+    if isinstance(cfg, dict):
+        smtp_cfg = cfg.get("smtp_verification") or {}
+    smtp_enabled = bool(smtp_cfg.get("enabled", True))
+    try:
+        smtp_timeout = float(smtp_cfg.get("timeout", 10.0))
+    except (TypeError, ValueError):
+        smtp_timeout = 10.0
+    email_validation_cache: Dict[str, FieldValidation] = {}
+    email_mx_cache: Dict[str, Optional[bool]] = {}
+    email_smtp_cache: Dict[str, SMTPVerificationResult] = {} if smtp_enabled else {}
 
     aggregated: Dict[str, dict] = {}
     for _, row in df.iterrows():
@@ -261,6 +275,29 @@ def run(cfg: dict, ctx: dict) -> dict:
             "rank": entry["rank"],
             "discovered_at": entry["discovered_at"],
         }
+        best_email_value = record["best_email"] or ""
+        smtp_status = None
+        smtp_reason = None
+        smtp_catch_all = None
+        if smtp_enabled and best_email_value:
+            cached_validation = email_validation_cache.get(best_email_value)
+            if cached_validation is None:
+                cached_validation = validate_email(
+                    best_email_value,
+                    check_mx=True,
+                    mx_cache=email_mx_cache,
+                    check_smtp=True,
+                    smtp_cache=email_smtp_cache,
+                    smtp_timeout=smtp_timeout,
+                )
+                email_validation_cache[best_email_value] = cached_validation
+            details = cached_validation.details or {}
+            smtp_status = details.get("smtp_status")
+            smtp_reason = details.get("smtp_reason")
+            smtp_catch_all = details.get("smtp_catch_all")
+        record["best_email_smtp_status"] = smtp_status
+        record["best_email_smtp_reason"] = smtp_reason
+        record["best_email_smtp_catch_all"] = smtp_catch_all
         has_contacts = bool(record["emails"] or record["phones"])
         if not has_contacts:
             no_contacts.append(

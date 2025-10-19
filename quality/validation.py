@@ -22,6 +22,12 @@ import phonenumbers
 import tldextract
 from email.utils import parseaddr
 
+from utils.email_validation import (
+    SMTPVerificationResult,
+    SMTPVerificationStatus,
+    passive_smtp_verify,
+)
+
 
 @dataclass(frozen=True)
 class FieldValidation:
@@ -79,6 +85,9 @@ def validate_email(
     *,
     check_mx: bool = True,
     mx_cache: Optional[Dict[str, Optional[bool]]] = None,
+    check_smtp: bool = False,
+    smtp_cache: Optional[Dict[str, SMTPVerificationResult]] = None,
+    smtp_timeout: float = 10.0,
 ) -> FieldValidation:
     """Validate email format (RFC-like) and optionally ensure MX record exists."""
     text = _normalize_text(value)
@@ -96,22 +105,23 @@ def validate_email(
     domain = normalized.rsplit("@", 1)[1].lower()
     local_part = normalized.rsplit("@", 1)[0]
     normalized = f"{local_part}@{domain}"
-    details: Dict[str, object] = {"mx_checked": bool(check_mx)}
+    details: Dict[str, object] = {
+        "mx_checked": bool(check_mx),
+        "smtp_checked": bool(check_smtp),
+    }
+    mx_valid: Optional[bool] = None
     if check_mx:
         try:
             if mx_cache is not None and domain in mx_cache:
                 mx_valid = mx_cache[domain]
-                details["mx_valid"] = mx_valid
-                if mx_valid is False:
-                    return FieldValidation(False, normalized=normalized, reason="mx", details=details)
-                return FieldValidation(True, normalized=normalized, details=details)
-            answers = dns.resolver.resolve(domain, "MX")
-            records = [rdata for rdata in answers]
-            has_records = bool(records)
-            details["mx_valid"] = has_records
-            if mx_cache is not None:
-                mx_cache[domain] = has_records
-            if not has_records:
+            else:
+                answers = dns.resolver.resolve(domain, "MX")
+                records = [rdata for rdata in answers]
+                mx_valid = bool(records)
+                if mx_cache is not None:
+                    mx_cache[domain] = mx_valid
+            details["mx_valid"] = mx_valid
+            if mx_valid is False:
                 return FieldValidation(False, normalized=normalized, reason="mx", details=details)
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
             details["mx_valid"] = False
@@ -124,6 +134,46 @@ def validate_email(
             details["mx_error"] = "lookup_failed"
             if mx_cache is not None:
                 mx_cache[domain] = None
+    else:
+        details["mx_valid"] = mx_valid
+    if check_smtp:
+        cache_key = normalized.lower()
+        smtp_result: Optional[SMTPVerificationResult] = None
+        if smtp_cache is not None and cache_key in smtp_cache:
+            smtp_result = smtp_cache[cache_key]
+        else:
+            if details.get("mx_valid") is False:
+                smtp_result = SMTPVerificationResult(
+                    email=normalized,
+                    domain=domain,
+                    status=SMTPVerificationStatus.INVALIDE,
+                    reason="mx_not_found",
+                )
+            else:
+                smtp_result = passive_smtp_verify(normalized, timeout=smtp_timeout)
+            if smtp_cache is not None:
+                smtp_cache[cache_key] = smtp_result
+
+        details["smtp_status"] = smtp_result.status.value
+        details["smtp_reason"] = smtp_result.reason
+        details["smtp_catch_all"] = smtp_result.catch_all
+        details["smtp_mx"] = smtp_result.mx
+        details["smtp_code"] = smtp_result.code
+        details["smtp_message"] = smtp_result.message
+        details["smtp_random_code"] = smtp_result.random_code
+        details["smtp_random_message"] = smtp_result.random_message
+        details["smtp_duration"] = smtp_result.duration
+
+        if smtp_result.status is SMTPVerificationStatus.INVALIDE:
+            return FieldValidation(
+                False,
+                normalized=normalized,
+                reason=smtp_result.reason or "smtp",
+                details=details,
+            )
+        if smtp_result.status is SMTPVerificationStatus.DOUTEUX:
+            details["smtp_inconclusive"] = True
+
     return FieldValidation(True, normalized=normalized, details=details)
 
 

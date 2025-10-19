@@ -13,6 +13,7 @@ from .validation import (
     validate_telephone,
 )
 from utils import io
+from utils.email_validation import SMTPVerificationResult, SMTPVerificationStatus
 from utils.parquet import iter_batches
 
 
@@ -27,12 +28,18 @@ class FieldStats:
         self.sample_size = sample_size
         self.invalid_examples: list[dict] = []
         self.reason_counts: Counter[str] = Counter()
+        self.smtp_status_counts: Counter[str] = Counter()
 
     def add_missing(self) -> None:
         self.missing += 1
 
     def add_result(self, raw_value: str, result: FieldValidation) -> None:
         self.present += 1
+        if result.details:
+            status = result.details.get("smtp_status")
+            if isinstance(status, str):
+                self.smtp_status_counts[status] += 1
+
         if result.is_valid:
             self.valid += 1
             return
@@ -55,6 +62,7 @@ class FieldStats:
             "invalid_rate": (self.invalid / self.present) if self.present else 0.0,
             "reason_counts": dict(self.reason_counts),
             "invalid_examples": self.invalid_examples,
+            "smtp_status_counts": dict(self.smtp_status_counts),
         }
 
 
@@ -79,6 +87,14 @@ def run(cfg, ctx):
     issues = []
     siren_nulls = 0
     cp_bad = 0
+    smtp_cfg = {}
+    if isinstance(cfg, dict):
+        smtp_cfg = cfg.get("smtp_verification") or {}
+    smtp_enabled = bool(smtp_cfg.get("enabled", True))
+    try:
+        smtp_timeout = float(smtp_cfg.get("timeout", 10.0))
+    except (TypeError, ValueError):
+        smtp_timeout = 10.0
     validation_stats = {
         "site_web": FieldStats(),
         "email": FieldStats(),
@@ -87,6 +103,10 @@ def run(cfg, ctx):
     }
     email_mx_inconclusive = 0
     email_mx_cache: Dict[str, Optional[bool]] = {}
+    email_smtp_cache: Dict[str, SMTPVerificationResult] = {} if smtp_enabled else {}
+    email_smtp_douteux = 0
+    email_smtp_invalid = 0
+    email_smtp_catch_all = 0
 
     columns: Iterable[str] = [
         "siren",
@@ -119,9 +139,25 @@ def run(cfg, ctx):
                     validation_stats["email"].add_missing()
                     continue
                 raw = str(value).strip()
-                result = validate_email(raw, check_mx=True, mx_cache=email_mx_cache)
+                result = validate_email(
+                    raw,
+                    check_mx=True,
+                    mx_cache=email_mx_cache,
+                    check_smtp=smtp_enabled,
+                    smtp_cache=email_smtp_cache if smtp_enabled else None,
+                    smtp_timeout=smtp_timeout,
+                )
                 if result.details and result.details.get("mx_valid") is None:
                     email_mx_inconclusive += 1
+                if smtp_enabled and result.details:
+                    status = result.details.get("smtp_status")
+                    reason = result.details.get("smtp_reason")
+                    if status == SMTPVerificationStatus.DOUTEUX.value:
+                        email_smtp_douteux += 1
+                        if reason == "catch_all":
+                            email_smtp_catch_all += 1
+                    elif status == SMTPVerificationStatus.INVALIDE.value:
+                        email_smtp_invalid += 1
                 validation_stats["email"].add_result(raw, result)
 
         if "telephone" in df.columns:
@@ -158,6 +194,13 @@ def run(cfg, ctx):
 
     if email_mx_inconclusive:
         issues.append({"key": "email_mx_lookup_inconclusive", "count": email_mx_inconclusive})
+    if smtp_enabled:
+        if email_smtp_invalid:
+            issues.append({"key": "email_smtp_invalid", "count": email_smtp_invalid})
+        if email_smtp_douteux:
+            issues.append({"key": "email_smtp_douteux", "count": email_smtp_douteux})
+        if email_smtp_catch_all:
+            issues.append({"key": "email_smtp_catch_all", "count": email_smtp_catch_all})
 
     payload = {"issues": issues, "validation": validation_payload}
     out_path = outdir / "quality_checks.json"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Iterable, Optional, Sequence, Set, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Set, Tuple
 
 import phonenumbers
 from phonenumbers import PhoneNumberType
@@ -411,6 +411,158 @@ def _digit_ratio(text: str) -> float:
     return digits / len(text)
 
 
+def score_lead(lead: Mapping[str, Any]) -> int:
+    """
+    Compute a heuristic engagement score for a lead dictionary.
+
+    The function inspects common fields (email, domain, sector, employee_count,
+    etc.) and returns an integer between 0 and 100.
+    """
+
+    if not lead:
+        return 0
+
+    score = 50.0
+
+    email = str(lead.get("email") or "").strip()
+    website = str(lead.get("domain") or lead.get("website") or lead.get("url") or "").strip()
+    company = str(lead.get("company") or lead.get("company_name") or lead.get("name") or "").strip()
+    city = str(lead.get("city") or "").strip()
+    country = str(lead.get("country") or "").strip()
+
+    email_domain = ""
+    if email and "@" in email:
+        local_part, _, domain_part = email.rpartition("@")
+        email_domain = _extract_registrable_domain(domain_part)
+        if email_domain in _GENERIC_EMAIL_DOMAINS:
+            score -= 30
+        elif email_domain:
+            score += 20
+        if _looks_nominative(local_part):
+            score += 5
+        else:
+            score -= 5
+    elif email:
+        score -= 15
+    else:
+        score -= 20
+
+    company_domain = _extract_registrable_domain(website)
+    if company_domain:
+        score += 10
+        if email_domain and _same_suffix(email_domain, company_domain):
+            score += 10
+    else:
+        score -= 10
+
+    if company:
+        score += 5
+    else:
+        score -= 5
+
+    sector_raw = lead.get("sector") or lead.get("industry") or lead.get("naf") or ""
+    sector_text = _normalize_text(str(sector_raw))
+    if sector_text:
+        high_value = {
+            "software",
+            "saas",
+            "tech",
+            "information",
+            "industrie",
+            "finance",
+            "medical",
+            "health",
+            "healthcare",
+            "biotech",
+            "aeronautique",
+            "aerospace",
+            "ingenierie",
+            "engineering",
+        }
+        low_value = {"association", "asso", "etudiant", "student", "ngo", "club"}
+        if any(keyword in sector_text for keyword in high_value):
+            score += 8
+        elif any(keyword in sector_text for keyword in low_value):
+            score -= 8
+        else:
+            score += 2
+    else:
+        score -= 5
+
+    employee_count = None
+    for key in ("employee_count", "employees", "headcount", "staff", "effectif", "effectifs"):
+        raw_value = lead.get(key)
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, (int, float)):
+            employee_count = int(raw_value)
+            break
+        if isinstance(raw_value, str):
+            digits = re.findall(r"\d+", raw_value)
+            if digits:
+                try:
+                    employee_count = int(digits[-1])
+                    break
+                except ValueError:
+                    continue
+    if employee_count is not None:
+        if employee_count >= 5000:
+            score += 15
+        elif employee_count >= 500:
+            score += 12
+        elif employee_count >= 50:
+            score += 8
+        elif employee_count >= 10:
+            score += 4
+        elif employee_count <= 1:
+            score -= 8
+        else:
+            score -= 3
+    else:
+        score -= 3
+
+    revenue = None
+    for key in ("revenue", "turnover", "ca", "chiffre_affaires"):
+        raw_value = lead.get(key)
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, (int, float)):
+            revenue = float(raw_value)
+            break
+        if isinstance(raw_value, str):
+            digits = re.findall(r"\d+", raw_value.replace(" ", ""))
+            if digits:
+                try:
+                    revenue = float(digits[0])
+                    break
+                except ValueError:
+                    continue
+    if revenue is not None:
+        if revenue >= 1_000_000:
+            score += 8
+        elif revenue >= 100_000:
+            score += 4
+        else:
+            score -= 2
+
+    if lead.get("phone") or lead.get("phone_number"):
+        score += 5
+
+    if company_domain and lead.get("linkedin"):
+        score += 5
+
+    if city:
+        score += 2
+    if country:
+        score += 2
+
+    completeness_fields = ["address", "zip", "postal_code", "linkedin", "phone", "website"]
+    filled = sum(1 for field in completeness_fields if lead.get(field))
+    score += filled
+
+    return max(0, min(100, int(round(score))))
+
+
 def _same_suffix(domain_a: str, domain_b: str) -> bool:
     if not domain_a or not domain_b:
         return False
@@ -419,4 +571,4 @@ def _same_suffix(domain_a: str, domain_b: str) -> bool:
     return parts_a == parts_b
 
 
-__all__ = ["score_domain", "score_email", "score_phone", "set_generic_email_filters"]
+__all__ = ["score_domain", "score_email", "score_phone", "set_generic_email_filters", "score_lead"]
