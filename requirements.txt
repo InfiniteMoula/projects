@@ -11,6 +11,7 @@ rapidfuzz==3.9.6
 phonenumbers==8.13.39
 readability-lxml==0.8.1
 dnspython==2.6.1
+python-whois==0.7.3
 pdfminer.six==20231228
 tldextract==5.1.2
 psutil==5.9.8
