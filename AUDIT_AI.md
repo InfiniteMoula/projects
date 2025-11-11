@@ -150,8 +150,8 @@
 
 ## operational_notes
 - Environment variables: load via `config.load_env()`; `.env.example` lists required keys (API tokens, proxies, budgets).
+- Missing secrets override: pass `--allow-missing-secrets` to CLI commands to skip hard failures when APIFY/HUNTER/proxy vars are absent (useful for offline runs; affected steps may degrade).
 - Outputs: All pipeline runs write under `out/<run>/` with subfolders normalized/, contacts/, logs/, reports/, metrics/. These directories are auto-created by `utils.directories.initialize_pipeline_directories`.
 - Budgets/KPI: configurable per job; enforced during each step with graceful errors (`BudgetTracker`, `KPICalculator`).
 - Observability: enable via `--prometheus-port`; optional Grafana stack in `monitoring/`.
 - Tests: run `pytest`; lint via `ruff check .` and `black .`.
-

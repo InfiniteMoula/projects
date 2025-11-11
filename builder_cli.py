@@ -1106,7 +1106,10 @@ def execute_steps(args, job, steps, *, suppress_output=False, logger=None):
             "Missing critical environment variables: "
             + ", ".join(missing_env)
         )
-        raise config.MissingSecretError(message)
+        if getattr(args, "allow_missing_secrets", False):
+            logger.warning("%s; proceeding due to --allow-missing-secrets", message)
+        else:
+            raise config.MissingSecretError(message)
     METRICS.reset()
 
     steps_sorted = topo_sorted(steps, logger)
@@ -1499,6 +1502,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     common.add_argument('--resume', action='store_true')
     common.add_argument('--verbose', action='store_true', help='Enable verbose logging with all process details')
     common.add_argument('--debug', action='store_true', help='Enable debug mode with important debug information')
+    common.add_argument(
+        '--allow-missing-secrets',
+        action='store_true',
+        help='Continue even if critical environment variables are missing (may disable some enrichments)',
+    )
     common.add_argument(
         '--max-ram-mb',
         type=int,

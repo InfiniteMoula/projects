@@ -25,6 +25,27 @@ DEFAULT_PROVIDERS = ("bing", "duckduckgo")
 DEFAULT_TLDS = ("fr", "com", "eu", "net", "org")
 SERP_SCORE_THRESHOLD = 0.6
 HEURISTIC_SCORE_THRESHOLD = 0.5
+NAME_FIELD_CANDIDATES: Tuple[str, ...] = (
+    "denomination",
+    "denominationunitelegale",
+    "denominationUniteLegale",
+    "denomination_usuelle",
+    "denominationusuelleetablissement",
+    "nom entreprise",
+    "nom_entreprise",
+    "nomcommercial",
+    "raison sociale",
+    "raison_sociale",
+    "enseigne",
+)
+CITY_FIELD_CANDIDATES: Tuple[str, ...] = (
+    "ville",
+    "commune",
+    "libellecommuneetablissement",
+    "libellecommune2etablissement",
+    "libellecommuneetrangeretablissement",
+    "libellecommuneetranger2etablissement",
+)
 LEGAL_FORMS = (
     "SARL",
     "SARLU",
@@ -119,14 +140,16 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
     if "site_web_score" not in df_out.columns:
         df_out["site_web_score"] = pd.NA
 
+    name_series = _build_text_series(df_out, NAME_FIELD_CANDIDATES)
+    city_series = _build_text_series(df_out, CITY_FIELD_CANDIDATES)
+
     try:
-        for row in df_out.itertuples(index=True):
-            idx = row.Index
-            denom_raw = _safe_str(getattr(row, "denomination", ""))
+        for idx in df_out.index:
+            denom_raw = _safe_str(name_series.at[idx] if idx in name_series.index else None)
             if not denom_raw:
                 continue
 
-            city_raw = _safe_str(getattr(row, "ville", ""))
+            city_raw = _safe_str(city_series.at[idx] if idx in city_series.index else None)
             name_for_query = _prepare_search_text(denom_raw)
             if not name_for_query:
                 continue
@@ -208,9 +231,47 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFrame:
 def _safe_str(value: Any) -> str:
     if value is None:
         return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
     if isinstance(value, str):
         return value.strip()
     return str(value).strip()
+
+
+def _normalize_field_label(label: str | None) -> str:
+    if not label:
+        return ""
+    ascii_label = _strip_accents(str(label)).lower()
+    return re.sub(r"[^a-z0-9]+", "", ascii_label)
+
+
+def _build_text_series(df: pd.DataFrame, candidates: Sequence[str]) -> pd.Series:
+    result = pd.Series(pd.NA, index=df.index, dtype="string")
+    if df.empty:
+        return result
+
+    column_lookup = {_normalize_field_label(col): col for col in df.columns}
+    for candidate in candidates:
+        column_name = column_lookup.get(_normalize_field_label(candidate))
+        if not column_name or column_name not in df.columns:
+            continue
+
+        values = df[column_name]
+        try:
+            values = values.astype("string", copy=False)
+        except Exception:
+            values = values.astype("string")
+        values = values.str.strip()
+        mask = result.isna() & values.notna() & values.ne("")
+        if mask.any():
+            result.loc[mask] = values.loc[mask]
+        if result.notna().all():
+            break
+
+    return result
 
 
 def _strip_accents(text: str) -> str:

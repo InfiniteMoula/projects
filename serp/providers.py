@@ -34,7 +34,7 @@ GENERIC_DOMAINS = {
     "business.site",
 }
 
-TRACKING_PREFIXES = ("utm_", "icid", "mc_", "mkt_", "pk_", "spm")
+TRACKING_PREFIXES = ("utm_", "utm", "icid", "mc_", "mkt_", "pk_", "spm")
 TRACKING_KEYS = {
     "ref",
     "referrer",

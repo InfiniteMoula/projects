@@ -58,6 +58,20 @@ class RequestLimiter:
         return self._limit
 
 
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 class HttpClient:
     """HTTP client with shared pools, caching, retries, and robots handling."""
 
@@ -70,14 +84,14 @@ class HttpClient:
         else:
             self._shared_limiter = None
         self._cfg = cfg_dict
-        self._timeout_seconds = float(self._cfg.get("timeout", 8.0))
-        self._max_concurrent_requests = max(1, int(self._cfg.get("max_concurrent_requests", 10)))
-        self._per_host_limit = max(1, int(self._cfg.get("per_host_limit", 2)))
-        self._retry_attempts = max(1, int(self._cfg.get("retry_attempts", 3)))
-        self._backoff_factor = float(self._cfg.get("backoff_factor", 0.5))
-        self._backoff_max = float(self._cfg.get("max_backoff", 10.0))
+        self._timeout_seconds = _safe_float(self._cfg.get("timeout", 8.0), 8.0)
+        self._max_concurrent_requests = max(1, _safe_int(self._cfg.get("max_concurrent_requests", 10), 10))
+        self._per_host_limit = max(1, _safe_int(self._cfg.get("per_host_limit", 2), 2))
+        self._retry_attempts = max(1, _safe_int(self._cfg.get("retry_attempts", 3), 3))
+        self._backoff_factor = _safe_float(self._cfg.get("backoff_factor", 0.5), 0.5)
+        self._backoff_max = _safe_float(self._cfg.get("max_backoff", 10.0), 10.0)
         self._respect_robots = bool(self._cfg.get("respect_robots", True))
-        self._robots_cache_ttl = float(self._cfg.get("robots_cache_ttl", 3600.0))
+        self._robots_cache_ttl = _safe_float(self._cfg.get("robots_cache_ttl", 3600.0), 3600.0)
         self._default_headers = dict(self._cfg.get("default_headers", {}))
         self._user_agents = self._load_user_agents(self._cfg)
 
@@ -92,14 +106,8 @@ class HttpClient:
                 db_path = cache_cfg.get("db_path")
                 ttl_raw = cache_cfg.get("ttl_seconds", 0)
                 max_raw = cache_cfg.get("max_items", 0)
-                try:
-                    ttl_seconds = int(ttl_raw)
-                except (TypeError, ValueError):
-                    ttl_seconds = 0
-                try:
-                    max_items = int(max_raw)
-                except (TypeError, ValueError):
-                    max_items = 0
+                ttl_seconds = _safe_int(ttl_raw, 0)
+                max_items = _safe_int(max_raw, 0)
                 if db_path and ttl_seconds > 0:
                     cache_path = Path(str(db_path))
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,7 +116,7 @@ class HttpClient:
                     except sqlite3.DatabaseError:
                         LOGGER.warning("Failed to initialise HTTP cache at %s", cache_path)
         else:
-            cache_ttl_days = float(self._cfg.get("cache_ttl_days", 0.0))
+            cache_ttl_days = _safe_float(self._cfg.get("cache_ttl_days", 0.0), 0.0)
             cache_dir_value = self._cfg.get("cache_dir")
             if cache_dir_value and cache_ttl_days > 0:
                 cache_dir = Path(cache_dir_value)
@@ -116,26 +124,21 @@ class HttpClient:
                 ttl_seconds = int(cache_ttl_days * 86400)
                 db_path = cache_dir / "http.sqlite"
                 max_items_raw = self._cfg.get("cache_max_items", 0)
-                try:
-                    max_items = int(max_items_raw)
-                except (TypeError, ValueError):
-                    max_items = 0
+                max_items = _safe_int(max_items_raw, 0)
                 try:
                     self._cache = SqliteCache(str(db_path), ttl_seconds, max_items)
                 except sqlite3.DatabaseError:
                     LOGGER.warning("Failed to initialise HTTP cache at %s", db_path)
         self._cache_enabled = self._cache is not None
 
+        default_max_conn = max(self._max_concurrent_requests, self._per_host_limit * 4)
+        max_conn_value = self._cfg.get("max_connections", default_max_conn)
+        keepalive_default = self._max_concurrent_requests
+        max_keepalive_value = self._cfg.get("max_keepalive_connections", keepalive_default)
+
         limits = httpx.Limits(
-            max_connections=int(
-                self._cfg.get(
-                    "max_connections",
-                    max(self._max_concurrent_requests, self._per_host_limit * 4),
-                )
-            ),
-            max_keepalive_connections=int(
-                self._cfg.get("max_keepalive_connections", self._max_concurrent_requests)
-            ),
+            max_connections=_safe_int(max_conn_value, default_max_conn),
+            max_keepalive_connections=_safe_int(max_keepalive_value, keepalive_default),
         )
         timeout = httpx.Timeout(self._timeout_seconds)
         follow_redirects = bool(self._cfg.get("follow_redirects", True))
@@ -153,9 +156,9 @@ class HttpClient:
 
         domain_delays_cfg = self._cfg.get("per_host_delay_seconds", {})
         self._per_host_delays = {
-            host.lower(): max(0.0, float(delay)) for host, delay in dict(domain_delays_cfg).items()
+            host.lower(): max(0.0, _safe_float(delay, 0.0)) for host, delay in dict(domain_delays_cfg).items()
         }
-        self._default_host_delay = max(0.0, float(self._cfg.get("default_per_host_delay", 0.0)))
+        self._default_host_delay = max(0.0, _safe_float(self._cfg.get("default_per_host_delay", 0.0), 0.0))
 
         self._async_rate_lock: Optional[asyncio.Lock] = None
         self._async_last_request: Dict[str, float] = {}
@@ -174,24 +177,20 @@ class HttpClient:
         circuit_breaker_cfg = self._cfg.get("circuit_breaker")
         if isinstance(circuit_breaker_cfg, Mapping):
             self._circuit_breaker_enabled = bool(circuit_breaker_cfg.get("enabled", False))
-            try:
-                self._circuit_breaker_threshold = float(
-                    circuit_breaker_cfg.get("threshold", self._circuit_breaker_threshold)
-                )
-            except (TypeError, ValueError):  # pragma: no cover - defensive
-                pass
-            try:
-                self._circuit_breaker_window = int(
-                    circuit_breaker_cfg.get("window", self._circuit_breaker_window)
-                )
-            except (TypeError, ValueError):  # pragma: no cover - defensive
-                pass
-            try:
-                self._circuit_breaker_cool_down = int(
-                    circuit_breaker_cfg.get("cool_down", self._circuit_breaker_cool_down)
-                )
-            except (TypeError, ValueError):  # pragma: no cover - defensive
-                pass
+            self._circuit_breaker_threshold = _safe_float(
+                circuit_breaker_cfg.get("threshold", self._circuit_breaker_threshold),
+                self._circuit_breaker_threshold,
+            )
+            self._circuit_breaker_window = max(
+                1, _safe_int(circuit_breaker_cfg.get("window", self._circuit_breaker_window), self._circuit_breaker_window)
+            )
+            self._circuit_breaker_cool_down = max(
+                1,
+                _safe_int(
+                    circuit_breaker_cfg.get("cool_down", self._circuit_breaker_cool_down),
+                    self._circuit_breaker_cool_down,
+                ),
+            )
 
     async def fetch_all(self, urls: List[str]) -> Dict[str, Tuple[int, str]]:
         """Fetch URLs concurrently with rate limits and retries."""
@@ -817,4 +816,11 @@ class HttpClient:
     def _error_response(self, method: str, url: str, reason: str) -> httpx.Response:
         request = httpx.Request(method, url)
         content = reason.encode("utf-8")
-        return httpx.Response(status_code=0, request=request, content=content, reason=reason)
+        # httpx 0.27+ no longer accepts the `reason` kwarg. Keep the reason available by
+        # encoding it in the body and storing it in extensions for downstream consumers.
+        return httpx.Response(
+            status_code=0,
+            request=request,
+            content=content,
+            extensions={"error_reason": reason},
+        )

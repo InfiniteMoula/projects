@@ -77,9 +77,55 @@ def _select_first_present(row: Any, candidates: Sequence[str]) -> Optional[objec
     return None
 
 
-def run(df_in: pd.DataFrame, cfg: Mapping[str, Any] | None) -> pd.DataFrame:
-    """Compute coherence scores and generate an aggregate correlation report."""
+def _resolve_outdir(ctx: Mapping[str, Any]) -> Path:
+    outdir_path = ctx.get("outdir_path")
+    if outdir_path:
+        return Path(outdir_path)
+    outdir = ctx.get("outdir")
+    if outdir:
+        return Path(outdir)
+    return Path.cwd()
 
+
+def _load_contacts_dataframe(ctx: Mapping[str, Any], cfg: Mapping[str, Any], *, logger: logging.Logger) -> tuple[pd.DataFrame, Path]:
+    outdir = _resolve_outdir(ctx)
+    source_override = cfg.get("source") if isinstance(cfg, Mapping) else None
+    if source_override:
+        source_path = Path(source_override)
+        if not source_path.is_absolute():
+            source_path = outdir / source_path
+    else:
+        source_path = outdir / "contacts_enriched.parquet"
+        if not source_path.exists():
+            source_path = outdir / "contacts_enriched.csv"
+
+    if not source_path.exists():
+        raise FileNotFoundError(source_path)
+
+    if source_path.suffix.lower() == ".csv":
+        df = pd.read_csv(source_path)
+    else:
+        df = pd.read_parquet(source_path)
+
+    logger.debug("Loaded %d rows for correlation from %s", len(df), source_path)
+    return df, source_path
+
+
+def _prepare_step_cfg(job_cfg: Mapping[str, Any], ctx: Mapping[str, Any]) -> Mapping[str, Any]:
+    step_cfg = {}
+    if isinstance(job_cfg, Mapping):
+        correlation_cfg = job_cfg.get("correlation") or {}
+        if isinstance(correlation_cfg, Mapping):
+            step_cfg.update(correlation_cfg)
+    report_dir = ctx.get("directories", {}).get("reports")
+    if report_dir is None:
+        report_dir = _resolve_outdir(ctx) / "reports"
+    report_path = Path(step_cfg.get("report_path") or report_dir / "correlation_summary.json")
+    step_cfg["report_path"] = str(report_path)
+    return step_cfg
+
+
+def _run_dataframe(df_in: pd.DataFrame | None, cfg: Mapping[str, Any] | None) -> pd.DataFrame:
     cfg = cfg or {}
     df_in = df_in if df_in is not None else pd.DataFrame()
     df_out = _ensure_columns(df_in.copy())
@@ -190,6 +236,58 @@ def run(df_in: pd.DataFrame, cfg: Mapping[str, Any] | None) -> pd.DataFrame:
         average_score,
     )
     return df_out
+
+
+def _run_pipeline(job_cfg: Mapping[str, Any] | None, ctx: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    ctx = ctx or {}
+    logger = ctx.get("logger", LOGGER)
+    job_cfg = job_cfg or {}
+
+    try:
+        df_in, source_path = _load_contacts_dataframe(ctx, job_cfg, logger=logger)
+    except FileNotFoundError as exc:
+        logger.warning("correlation.checks skipped: missing input %s", exc)
+        return {"status": "SKIPPED", "reason": "MISSING_INPUT", "source": str(exc)}
+    except Exception as exc:  # pragma: no cover - IO defensive
+        logger.exception("Failed to load contacts data for correlation")
+        return {"status": "FAIL", "error": str(exc)}
+
+    step_cfg = _prepare_step_cfg(job_cfg, ctx)
+    df_out = _run_dataframe(df_in, step_cfg)
+
+    outdir = _resolve_outdir(ctx)
+    output_path = outdir / "contacts_correlation.parquet"
+    df_out.to_parquet(output_path, index=False)
+
+    status = "OK"
+    reason = None
+    if df_out.empty:
+        status = "SKIPPED"
+        reason = "EMPTY_INPUT"
+        logger.info("correlation.checks skipped: empty dataset (%s)", source_path.name)
+    else:
+        logger.info(
+            "correlation.checks completed: rows=%d | report=%s",
+            len(df_out),
+            step_cfg.get("report_path"),
+        )
+
+    return {
+        "status": status,
+        "rows": len(df_out),
+        "file": str(output_path),
+        "source": str(source_path),
+        "report": str(step_cfg.get("report_path")),
+        **({"reason": reason} if reason else {}),
+    }
+
+
+def run(first_arg: Any, second_arg: Mapping[str, Any] | None = None):
+    """Entry point compatible with both tests (DataFrame input) and CLI (cfg/context)."""
+
+    if isinstance(first_arg, pd.DataFrame) or first_arg is None:
+        return _run_dataframe(first_arg, second_arg)
+    return _run_pipeline(first_arg, second_arg)
 
 
 __all__ = ["run"]
