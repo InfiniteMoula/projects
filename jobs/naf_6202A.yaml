@@ -3,25 +3,41 @@ niche: "naf_6202A"
 filters:
   naf_include: ["6202A"]
   active_only: false
-  # regions: ["75","92","93","94"]   # (optionnel) filtre par préfixe CP
+  # regions: ["75","92","93","94"]   # (optionnel) filtre par prefixe CP
 
 profile: "standard"
-steps_order: []               # laisse le CLI gérer l'ordre
+steps_order: []               # laisse le CLI gerer l'ordre
 
 http:
   seeds:
+    - "https://www.numeum.fr"
+    - "https://www.syntec-conseil.fr"
     - "https://www.syntec-numerique.fr"
     - "https://www.conseil-informatique.fr"
-    - "https://www.tech.fr"
-    - "https://www.ssii.fr"
+    - "https://www.freelance-informatique.fr"
+    - "https://www.digital-league.org"
   per_domain_rps: 0.5
 
 sitemap:
   domains:
+    - "numeum.fr"
+    - "syntec-conseil.fr"
     - "syntec-numerique.fr"
     - "conseil-informatique.fr"
-  allow_patterns: ["contact","mentions","about","equipe","team","avocats","experts","services","cabinet"]
-  max_urls: 500
+    - "freelance-informatique.fr"
+    - "digital-league.org"
+  allow_patterns:
+    - "contact"
+    - "mentions"
+    - "about"
+    - "equipe"
+    - "team"
+    - "services"
+    - "consultant"
+    - "agence"
+    - "experts"
+    - "cabinet"
+  max_urls: 600
 
 feeds:
   urls: []
@@ -32,7 +48,12 @@ api:
 
 enrich:
   directory_csv: ""
-  email_formats_priority: ["contact@{d}","info@{d}","bonjour@{d}","cabinet@{d}","secretariat@{d}"]
+  email_formats_priority:
+    - "contact@{d}"
+    - "info@{d}"
+    - "bonjour@{d}"
+    - "team@{d}"
+    - "support@{d}"
 
 dedupe:
   keys: ["siren","domain_root","best_email","telephone_norm"]

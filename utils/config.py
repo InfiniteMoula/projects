@@ -20,10 +20,7 @@ class MissingSecretError(RuntimeError):
     """Raised when a required configuration value is absent."""
 
 
-CRITICAL_ENV_VARS: Mapping[str, str] = {
-    "APIFY_API_TOKEN": "required to authenticate with Apify actors",
-    "HUNTER_API_KEY": "required for email enrichment and verification",
-}
+CRITICAL_ENV_VARS: Mapping[str, str] = {}
 
 CRITICAL_ENV_GROUPS: Sequence[tuple[Iterable[str], str]] = (
     (("HTTP_PROXY", "HTTPS_PROXY", "PROXY_URL"), "proxy configuration"),
