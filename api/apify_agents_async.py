@@ -33,8 +33,20 @@ from utils.dynamic_config import DynamicConfigurationManager, ConfigPriority, cr
 from utils.industry_optimizer import IndustryOptimizer, IndustryCategory, OptimizationStrategy, create_industry_optimizer
 from utils.progress_tracker import ProgressTracker
 from utils.batch_processor import BatchProcessor
+from proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
+PROXY_MANAGER = ProxyManager()
+
+
+def _aiohttp_proxy_kwargs() -> Dict[str, str]:
+    proxy_url = PROXY_MANAGER.as_aiohttp()
+    return {"proxy": proxy_url} if proxy_url else {}
+
+
+def _log_proxy_failure(method: str, url: str, exc: BaseException) -> None:
+    if PROXY_MANAGER.enabled:
+        logger.warning("Proxy %s %s failed: %s", method, url, exc, exc_info=True)
 
 
 class AsyncApifyClient:
@@ -50,24 +62,41 @@ class AsyncApifyClient:
             # Start actor run
             start_url = f"{self.base_url}/acts/{actor_id}/runs"
             headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
-            
-            async with session.post(start_url, json=run_input, headers=headers) as response:
-                if response.status != 201:
-                    raise Exception(f"Failed to start actor: {response.status}")
-                run_data = await response.json()
-                run_id = run_data["data"]["id"]
+            try:
+                async with session.post(
+                    start_url,
+                    json=run_input,
+                    headers=headers,
+                    **_aiohttp_proxy_kwargs(),
+                ) as response:
+                    if response.status != 201:
+                        raise Exception(f"Failed to start actor: {response.status}")
+                    run_data = await response.json()
+                    run_id = run_data["data"]["id"]
+            except aiohttp.ClientError as exc:
+                _log_proxy_failure("POST", start_url, exc)
+                raise
             
             # Wait for completion
             status_url = f"{self.base_url}/actor-runs/{run_id}"
             start_time = time.time()
+            status_data: Dict[str, Any] = {}
             
             while time.time() - start_time < timeout:
-                async with session.get(status_url, headers=headers) as response:
-                    status_data = await response.json()
-                    status = status_data["data"]["status"]
-                    
-                    if status in ["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"]:
-                        break
+                try:
+                    async with session.get(
+                        status_url,
+                        headers=headers,
+                        **_aiohttp_proxy_kwargs(),
+                    ) as response:
+                        status_data = await response.json()
+                        status = status_data["data"]["status"]
+                        
+                        if status in ["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"]:
+                            break
+                except aiohttp.ClientError as exc:
+                    _log_proxy_failure("GET", status_url, exc)
+                    raise
                         
                 await asyncio.sleep(5)  # Check every 5 seconds
             
@@ -76,9 +105,17 @@ class AsyncApifyClient:
             results_url = f"{self.base_url}/datasets/{dataset_id}/items"
             
             results = []
-            async with session.get(results_url, headers=headers) as response:
-                if response.status == 200:
-                    results = await response.json()
+            try:
+                async with session.get(
+                    results_url,
+                    headers=headers,
+                    **_aiohttp_proxy_kwargs(),
+                ) as response:
+                    if response.status == 200:
+                        results = await response.json()
+            except aiohttp.ClientError as exc:
+                _log_proxy_failure("GET", results_url, exc)
+                raise
                     
             return {
                 "status": status,

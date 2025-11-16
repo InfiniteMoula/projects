@@ -1,6 +1,7 @@
 
 # FILE: enrich/site_probe.py
 import time
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
@@ -12,11 +13,14 @@ import requests
 from utils import budget_middleware
 from utils.state import SequentialRunState
 from utils.parquet import ParquetBatchWriter, iter_batches
+from proxy_manager import ProxyManager
 
 REQ_TIMEOUT = 4.0
 UA = "Mozilla/5.0 (+contact-probe)"
 DEFAULT_CACHE_TTL = 900
 DEFAULT_RETRIES = 2
+MODULE_LOGGER = logging.getLogger(__name__)
+PROXY_MANAGER = ProxyManager()
 
 
 def _probe(
@@ -31,12 +35,15 @@ def _probe(
     if not u.startswith(("http://", "https://")):
         u = "https://" + u
     try:
-        response = requests.head(
-            u,
-            allow_redirects=True,
-            timeout=timeout,
-            headers={"User-Agent": UA},
-        )
+        kwargs = {
+            "allow_redirects": True,
+            "timeout": timeout,
+            "headers": {"User-Agent": UA},
+        }
+        proxies = PROXY_MANAGER.as_requests()
+        if proxies:
+            kwargs["proxies"] = proxies
+        response = requests.head(u, **kwargs)
         if request_tracker:
             try:
                 content_length = int(response.headers.get("Content-Length") or 0)
@@ -47,7 +54,9 @@ def _probe(
         return ok, response.url if ok else ""
     except budget_middleware.BudgetExceededError:
         raise
-    except Exception:
+    except Exception as exc:
+        if PROXY_MANAGER.enabled:
+            MODULE_LOGGER.warning("Proxy HEAD request failed for %s: %s", u, exc, exc_info=True)
         if request_tracker:
             try:
                 request_tracker(0)

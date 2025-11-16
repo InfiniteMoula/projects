@@ -9,6 +9,7 @@ Pipeline industriel utilise par l'equipe Infinitemoula pour collecter, normalise
 - [Contexte et objectifs](#contexte-et-objectifs)
 - [Architecture et flux](#architecture-et-flux)
 - [Installation et prerequis](#installation-et-prerequis)
+- [Proxy HTTP](#proxy-http)
 - [CLI : commandes essentielles](#cli--commandes-essentielles)
 - [Jobs, profils et batch](#jobs-profils-et-batch)
 - [Configuration denrichissement et mode adaptatif](#configuration-denrichissement-et-mode-adaptatif)
@@ -74,6 +75,36 @@ pip install -r requirements.txt
 python -m playwright install
 Copy-Item .env.example .env
 ```
+
+## Proxy HTTP
+
+- `ProxyManager` centralise la configuration du proxy rotatif PyProxy et alimente automatiquement les clients `requests` et `aiohttp` utilises pour les scrapers (`scripts/email_image_ocr.py`, `enrich/site_probe.py`, `api/apify_agents_async.py`).
+- Le fournisseur peut etre change sans modifier le code via `PROXY_PROVIDER` (par defaut `pyproxy`). Les variables suivantes sont lues: `<PROVIDER>_ENABLED`, `<PROVIDER>_HOST`, `<PROVIDER>_PORT`, `<PROVIDER>_USERNAME`, `<PROVIDER>_PASSWORD`.
+- Les credentiels peuvent provenir d'un fichier local ignore (`config/local_proxy.toml`) ou d'environnements. Exemple de fichier (EXAMPLE — ne pas committer):
+
+  ```toml
+  [pyproxy]
+  enabled = true
+  host = "925559a762982876.zqq.na.pyproxy.io"
+  port = 16666
+  username = "deuxt921-zone-resi"
+  password = "deuxt129"
+  ```
+
+- Exemple PowerShell (EXAMPLE — ne pas committer):
+
+  ```powershell
+  set PROXY_PROVIDER=pyproxy
+  set PYPROXY_ENABLED=true
+  set PYPROXY_HOST=925559a762982876.zqq.na.pyproxy.io
+  set PYPROXY_PORT=16666
+  set PYPROXY_USERNAME=deuxt921-zone-resi
+  set PYPROXY_PASSWORD=deuxt129
+  ```
+
+- Pour les tests locaux sans proxy, positionnez `set PYPROXY_ENABLED=false` (ou supprimez les variables) et aucun argument `proxies`/`proxy` ne sera injecte.
+- `tools/test_pyproxy.py` verifie la configuration (requete `requests` + `aiohttp` vers `https://api.ipify.org`). Lancez `python tools/test_pyproxy.py` depuis la racine apres avoir active votre virtualenv. Le mot de passe est masque dans les logs.
+- **Attention :** ne jamais committer les credentiels reel (le fichier `config/local_proxy.toml` est ajoute au `.gitignore`).
 
 ## CLI : commandes essentielles
 

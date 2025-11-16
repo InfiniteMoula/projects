@@ -16,6 +16,9 @@ source/
 *.log
 logs/
 
+# --- Local proxy configuration ---
+config/local_proxy.toml
+
 # --- Datasets / Outputs ---
 output/
 out/

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import re
 from io import BytesIO
+import logging
 from pathlib import Path
 from typing import Iterable, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -14,8 +15,12 @@ from bs4.element import Tag
 from PIL import Image
 import pytesseract
 
+from proxy_manager import ProxyManager
+
 
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+logger = logging.getLogger(__name__)
+PROXY_MANAGER = ProxyManager()
 
 
 class DownloadError(RuntimeError):
@@ -24,9 +29,15 @@ class DownloadError(RuntimeError):
 
 def fetch_html(url: str) -> str:
     try:
-        response = requests.get(url, timeout=15)
+        kwargs = {"timeout": 15}
+        proxies = PROXY_MANAGER.as_requests()
+        if proxies:
+            kwargs["proxies"] = proxies
+        response = requests.get(url, **kwargs)
         response.raise_for_status()
     except requests.RequestException as exc:
+        if PROXY_MANAGER.enabled:
+            logger.warning("Proxy HTTP GET failed for %s: %s", url, exc)
         raise DownloadError(f"Unable to fetch HTML from {url}: {exc}") from exc
     return response.text
 
@@ -51,9 +62,15 @@ def is_email_related(src: str, alt: Optional[str], title: Optional[str]) -> bool
 
 def download_image(img_url: str) -> bytes:
     try:
-        response = requests.get(img_url, timeout=15)
+        kwargs = {"timeout": 15}
+        proxies = PROXY_MANAGER.as_requests()
+        if proxies:
+            kwargs["proxies"] = proxies
+        response = requests.get(img_url, **kwargs)
         response.raise_for_status()
     except requests.RequestException as exc:
+        if PROXY_MANAGER.enabled:
+            logger.warning("Proxy image download failed for %s: %s", img_url, exc)
         raise DownloadError(f"Failed to download image {img_url}: {exc}") from exc
     return response.content
 
