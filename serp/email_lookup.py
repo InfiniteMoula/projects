@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable, Mapping, MutableMapping
 
 from net.http_client import HttpClient
-from serp.providers import BingProvider, DuckDuckGoProvider, Result, SerpProvider
+from serp.providers import BingProvider, DuckDuckGoProvider, BraveProvider, Result, SerpProvider
 
 EMAIL_PATTERN = re.compile(r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
 
@@ -18,6 +18,7 @@ _DEFAULT_HEADERS = {
 _PROVIDER_FACTORIES: Mapping[str, type[SerpProvider]] = {
     "duckduckgo": DuckDuckGoProvider,
     "bing": BingProvider,
+    "brave": BraveProvider,
 }
 
 

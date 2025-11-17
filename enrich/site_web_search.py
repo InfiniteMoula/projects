@@ -15,7 +15,7 @@ import tldextract
 
 from net.http_client import HttpClient
 from constants import GENERIC_DOMAINS
-from serp.providers import Result, SerpProvider, BingProvider, DuckDuckGoProvider
+from serp.providers import Result, SerpProvider, BingProvider, DuckDuckGoProvider, BraveProvider
 from serp.playwright_provider import PlaywrightBingProvider, PlaywrightGoogleProvider
 from utils.scoring import score_domain
 
@@ -76,6 +76,7 @@ LEGAL_FORMS = (
 PROVIDER_REGISTRY: Dict[str, type[SerpProvider]] = {
     "bing": BingProvider,
     "duckduckgo": DuckDuckGoProvider,
+    "brave": BraveProvider,
     "playwright_bing": PlaywrightBingProvider,
     "playwright_google": PlaywrightGoogleProvider,
 }

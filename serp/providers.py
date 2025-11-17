@@ -249,10 +249,86 @@ class DuckDuckGoProvider(SerpProvider):
         return f"https://html.duckduckgo.com/html/?{params}"
 
 
+class BraveProvider(SerpProvider):
+    """SERP provider parsing Brave Search HTML results."""
+
+    def search(self, query: str) -> List[Result]:
+        url = self._build_url(query)
+        provider_name = type(self).__name__
+        base_labels = {
+            "provider": provider_name,
+            "kind": "serp",
+            "group": f"serp:{provider_name}",
+        }
+        METRICS.increment_counter("requests_total", labels=base_labels)
+        start = time.perf_counter()
+        response = self._http.get(url)
+        duration = time.perf_counter() - start
+        METRICS.record_latency(f"serp:{provider_name}", duration)
+        if response.status_code != httpx.codes.OK:
+            LOGGER.warning("Brave returned status %s for %r", response.status_code, query)
+            error_labels = dict(base_labels)
+            error_labels["status"] = str(response.status_code)
+            METRICS.increment_counter("errors_total", labels=error_labels)
+            return []
+
+        soup = BeautifulSoup(response.text, "lxml")
+        selectors = [
+            "div.result",
+            "div.snippet",
+            "li.snippet-card",
+        ]
+        results: List[Result] = []
+        for selector in selectors:
+            for element in soup.select(selector):
+                anchor = (
+                    element.select_one("a.result-header[href]")
+                    or element.select_one("a.snippet-title[href]")
+                    or element.find("a", href=True)
+                )
+                if not anchor:
+                    continue
+                cleaned_url = self._clean_url(anchor["href"], base=url)
+                if not cleaned_url:
+                    continue
+                domain = self._extract_domain(cleaned_url)
+                if not domain or self._is_generic_domain(domain):
+                    continue
+
+                title = anchor.get_text(" ", strip=True)
+                snippet_node = element.select_one(".snippet-description, .result-snippet, p")
+                snippet = snippet_node.get_text(" ", strip=True) if snippet_node else ""
+                results.append(
+                    Result(
+                        url=cleaned_url,
+                        domain=domain,
+                        title=title,
+                        snippet=snippet,
+                        rank=len(results) + 1,
+                    )
+                )
+                if len(results) >= self.max_results:
+                    return results
+            if results:
+                break
+        return results
+
+    def _build_url(self, query: str) -> str:
+        params = httpx.QueryParams(
+            {
+                "q": query,
+                "source": "web",
+                "num": self.max_results,
+            }
+        )
+        return f"https://search.brave.com/search?{params}"
+
+
 __all__ = [
     "GENERIC_DOMAINS",
     "Result",
     "SerpProvider",
     "BingProvider",
     "DuckDuckGoProvider",
+    "BraveProvider",
 ]

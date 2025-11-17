@@ -20,19 +20,21 @@ circuit_breaker:
 
 domains:
   # SERP providers used to discover company domains (evaluated in this order).
-  providers: ["bing", "duckduckgo"]
+  providers: ["bing", "duckduckgo", "brave"]
 
   embeddings:
-    enabled: false
+    enabled: true
     threshold: 0.6
     model: "all-MiniLM-L6-v2"
 
   # Per-provider fine tuning (here we only cap the number of results scanned).
   providers_config:
     bing:
-      max_results: 5
+      max_results: 2
     duckduckgo:
-      max_results: 5
+      max_results: 2
+    brave:
+      max_results: 2
 
   http_client:
     # Use a dedicated User-Agent pool file (one per line) for SERP requests.
@@ -44,13 +46,13 @@ domains:
     #   - "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_2) Safari/605.1.15"
 
     # Concurrency guard across all requests launched by the client.
-    max_concurrent_requests: 10
+    max_concurrent_requests: 5
     # Maximum parallel requests allowed for a single host.
-    per_host_limit: 2
+    per_host_limit: 1
     # Request timeout in seconds for both connection and response phases.
-    timeout: 8.0
+    timeout: 12.0
     # Number of retry attempts applied to recover from transient failures.
-    retry_attempts: 2
+    retry_attempts: 3
     # Base delay (in seconds) for exponential backoff between retries.
     delay_base: 1.0
     # Directory used to persist HTTP responses between runs.
@@ -67,16 +69,28 @@ domains:
   # Hostname prefixes evaluated during heuristic probing.
   prefixes: ["", "www."]
   # Additional domains to exclude from SERP results.
-  extra_generic_domains: ["pagespro.orange.fr"]
+  extra_generic_domains:
+    - "pagespro.orange.fr"
+    - "rrg-dosi-saint-herblain.fr"
+    - "rrg-dosi-saint-herblain.com"
+    - "rrg-dosi-saint-herblain.eu"
+    - "nd.fr"
+    - "nd.com"
+    - "neverhack-secops.fr"
+    - "neverhack-secops.com"
+    - "depann-pc.com"
+    - "depann-pc.eu"
+    - "techtoolgeek.fr"
+    - "techtoolgeek.com"
 
 contacts:
   http_client:
     # Contacts crawling shares the same networking constraints as SERP discovery.
     user_agents_file: "data/user_agents.txt"
-    max_concurrent_requests: 10
-    per_host_limit: 2
-    timeout: 8.0
-    retry_attempts: 2
+    max_concurrent_requests: 5
+    per_host_limit: 1
+    timeout: 12.0
+    retry_attempts: 3
     delay_base: 1.0
     cache_dir: ".cache/http"
     cache_ttl_days: 7
@@ -99,20 +113,22 @@ contacts:
 
 linkedin:
   # SERP-based discovery of LinkedIn company pages leverages the same providers.
-  providers: ["bing", "duckduckgo"]
+  providers: ["bing", "duckduckgo", "brave"]
   providers_config:
     bing:
-      max_results: 5
+      max_results: 2
     duckduckgo:
-      max_results: 5
+      max_results: 2
+    brave:
+      max_results: 2
 
   http_client:
     # LinkedIn discovery piggybacks on the same HTTP tuning for consistency.
     user_agents_file: "data/user_agents.txt"
-    max_concurrent_requests: 10
-    per_host_limit: 2
-    timeout: 8.0
-    retry_attempts: 2
+    max_concurrent_requests: 5
+    per_host_limit: 1
+    timeout: 12.0
+    retry_attempts: 3
     delay_base: 1.0
     cache_dir: ".cache/http"
     cache_ttl_days: 7

@@ -16,6 +16,10 @@ http:
     - "https://www.conseil-informatique.fr"
     - "https://www.freelance-informatique.fr"
     - "https://www.digital-league.org"
+    - "https://www.neverhack-secops.fr"
+    - "https://www.techtoolgeek.fr"
+    - "https://www.depann-pc.com"
+    - "https://www.ibm.com"
   per_domain_rps: 0.5
 
 sitemap:
@@ -26,6 +30,10 @@ sitemap:
     - "conseil-informatique.fr"
     - "freelance-informatique.fr"
     - "digital-league.org"
+    - "neverhack-secops.fr"
+    - "techtoolgeek.fr"
+    - "depann-pc.com"
+    - "ibm.com"
   allow_patterns:
     - "contact"
     - "mentions"
@@ -60,7 +68,11 @@ dedupe:
   fuzzy: false
 
 scoring:
-  weights: {contactability:50, unicity:20, completeness:20, freshness:10}
+  weights:
+    contactability: 50
+    unicity: 20
+    completeness: 20
+    freshness: 10
 
 output:
   dir: "out/naf_6202A"

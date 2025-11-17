@@ -29,6 +29,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 try:  # Python 3.11+
     import tomllib
@@ -82,6 +83,7 @@ class ProxyManager:
         self._port = self._get_setting("PORT", "port")
         self._username = self._get_setting("USERNAME", "username")
         self._password = self._get_setting("PASSWORD", "password")
+        self._params = self._load_params()
         self._log_status()
 
     @property
@@ -131,6 +133,39 @@ class ProxyManager:
             return None
         return str(candidate).strip()
 
+    def _load_params(self) -> Dict[str, str]:
+        params: Dict[str, str] = {}
+        section = self._provider_section()
+        cfg_params = section.get("params")
+        if isinstance(cfg_params, dict):
+            for key, value in cfg_params.items():
+                if value is None:
+                    continue
+                params[str(key)] = str(value)
+
+        def _env_override(name: str, target_key: str) -> None:
+            env_name = f"{self.env_prefix}{name}"
+            value = os.getenv(env_name)
+            if value:
+                params[target_key] = value.strip()
+
+        _env_override("SESSION", "session")
+        _env_override("COUNTRY", "country")
+        _env_override("REGION", "region")
+        _env_override("DURATION", "duration")
+        _env_override("PARAMS", "params")
+
+        if "params" in params:
+            # Allow PROVIDER_PARAMS to contain a querystring fragment
+            raw_params = {}
+            for part in params["params"].split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    raw_params[k] = v
+            params.update(raw_params)
+            del params["params"]
+        return params
+
     def _log_status(self) -> None:
         if self.enabled:
             if self._host and self._port:
@@ -153,7 +188,12 @@ class ProxyManager:
         if not all([self._username, self._password, self._host, self._port]):
             LOGGER.warning("Proxy configuration incomplete for %s; skipping proxy", self.provider)
             return None
-        return f"http://{self._username}:{self._password}@{self._host}:{self._port}"
+        base = f"http://{self._username}:{self._password}@{self._host}:{self._port}"
+        if self._params:
+            query = urlencode(self._params)
+            if query:
+                return f"{base}?{query}"
+        return base
 
     def as_requests(self) -> Optional[Dict[str, str]]:
         """Return ``requests`` style proxies mapping or ``None`` when disabled."""

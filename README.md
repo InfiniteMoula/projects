@@ -89,6 +89,12 @@ Copy-Item .env.example .env
   port = 16666
   username = "deuxt921-zone-resi"
   password = "deuxt129"
+
+  [pyproxy.params]
+  # Sticky IP pendant 120 minutes sur le pool mondial
+  session = "builder-sticky"
+  country = "global"
+  duration = 120
   ```
 
 - Exemple PowerShell (EXAMPLE — ne pas committer):
@@ -100,6 +106,9 @@ Copy-Item .env.example .env
   set PYPROXY_PORT=16666
   set PYPROXY_USERNAME=deuxt921-zone-resi
   set PYPROXY_PASSWORD=deuxt129
+  set PYPROXY_SESSION=builder-sticky
+  set PYPROXY_COUNTRY=global
+  set PYPROXY_DURATION=120
   ```
 
 - Pour les tests locaux sans proxy, positionnez `set PYPROXY_ENABLED=false` (ou supprimez les variables) et aucun argument `proxies`/`proxy` ne sera injecte.
@@ -123,6 +132,20 @@ python builder_cli.py run-profile \
   --parallel --workers 6 \
   --prometheus-port 9099 \
   --metrics-file reports/report_metrics.json
+```
+
+Profil standard_nocapital v2 optimise (proxy + debug) :
+
+```powershell
+python builder_cli.py run-profile `
+  --job jobs/naf_6202A.yaml `
+  --profile standard_nocapital_v2 `
+  --naf 6202A `
+  --input data\sirene_sample.parquet `
+  --out out\naf_6202A_standard_nocap `
+  --debug `
+  --verbose `
+  --allow-missing-secrets
 ```
 
 Options utiles :
