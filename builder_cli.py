@@ -97,6 +97,13 @@ STEP_REGISTRY = {
     "package.export": "package.exporter:run",
     "metrics.export": "metrics.exporter:run",
     "finalize.premium_dataset": "utils.filters:run_finalize_premium_dataset",
+    "top500.load_dataset": "pipeline.top_500_premium:load_enriched_dataset",
+    "top500.filter_sellable": "pipeline.top_500_premium:filter_sellable",
+    "top500.ensure_score": "pipeline.top_500_premium:ensure_score",
+    "top500.sort_score": "pipeline.top_500_premium:sort_by_score",
+    "top500.limit": "pipeline.top_500_premium:select_head",
+    "top500.reorder": "pipeline.top_500_premium:reorder_for_export",
+    "top500.export_csv": "pipeline.top_500_premium:export_csv",
 }
 
 STEP_DEPENDENCIES = {
@@ -145,6 +152,12 @@ STEP_DEPENDENCIES = {
     "package.export": {"quality.score"},
     "metrics.export": {"quality.score"},
     "finalize.premium_dataset": {"package.export"},
+    "top500.filter_sellable": {"top500.load_dataset"},
+    "top500.ensure_score": {"top500.filter_sellable"},
+    "top500.sort_score": {"top500.ensure_score"},
+    "top500.limit": {"top500.sort_score"},
+    "top500.reorder": {"top500.limit"},
+    "top500.export_csv": {"top500.reorder"},
 }
 
 ENRICHMENT_STEP_FLAGS = {
@@ -263,6 +276,15 @@ PROFILES = {
         "quality.score",
         "package.export",
         "finalize.premium_dataset",
+    ],
+    "top_500_premium": [
+        "top500.load_dataset",
+        "top500.filter_sellable",
+        "top500.ensure_score",
+        "top500.sort_score",
+        "top500.limit",
+        "top500.reorder",
+        "top500.export_csv",
     ],
 }
 
