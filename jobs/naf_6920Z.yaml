@@ -59,8 +59,8 @@ kpi_targets:
 
 budgets:
   max_http_bytes: 52428800   # 50MB - supports Google Maps enrichment
-  max_http_requests: 2000    # sufficient for web scraping and Google Maps searches
-  time_budget_min: 90        # extended time for comprehensive enrichment
+  max_http_requests: 8000    # higher cap for large Google Maps batches
+  time_budget_min: 360       # allow long-running enrichments to complete
   ram_mb: 4096
 
 retention_days: 30

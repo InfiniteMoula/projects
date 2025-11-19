@@ -24,6 +24,7 @@ import pyarrow as pa
 import httpx
 from bs4 import BeautifulSoup
 
+from proxy_manager import ProxyManager
 from utils import budget_middleware
 from utils.parquet import ParquetBatchWriter
 from utils.state import SequentialRunState
@@ -33,6 +34,8 @@ MAPS_TIMEOUT = 15.0
 REQUEST_DELAY = (2.0, 4.0)  # Random delay between requests (min, max) in seconds
 MAX_WORKERS = 1  # Very limited to avoid being blocked by Google Maps
 RETRY_COUNT = 2
+
+PROXY_MANAGER = ProxyManager()
 
 # User agent that looks like a regular browser
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
@@ -271,6 +274,8 @@ def _merge_maps_results(search_results: List[Dict]) -> pd.DataFrame:
 def run(cfg: dict, ctx: dict) -> dict:
     """Run Google Maps search enrichment."""
     logger = ctx.get("logger")
+    if logger:
+        logger.info("Google Maps proxy enabled: %s", PROXY_MANAGER.enabled)
     t0 = time.time()
 
     outdir = Path(ctx.get("outdir_path") or ctx.get("outdir"))
@@ -376,7 +381,13 @@ def run(cfg: dict, ctx: dict) -> dict:
             "Upgrade-Insecure-Requests": "1"
         }
         
-        with httpx.Client(headers=headers, follow_redirects=True, timeout=MAPS_TIMEOUT) as session:
+        proxies = PROXY_MANAGER.as_httpx()
+        with httpx.Client(
+            headers=headers,
+            follow_redirects=True,
+            timeout=MAPS_TIMEOUT,
+            proxies=proxies,
+        ) as session:
             for idx, query in enumerate(unique_queries):
                 if query not in pending_queries:
                     continue
