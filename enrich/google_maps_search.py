@@ -37,6 +37,29 @@ RETRY_COUNT = 2
 
 PROXY_MANAGER = ProxyManager()
 
+
+def _proxy_settings_for_httpx() -> Optional[Dict[str, str]]:
+    """
+    Return httpx-compatible proxy settings from ProxyManager.
+
+    Falls back to as_requests() for compatibility while waiting for
+    ProxyManager.as_httpx() to be available everywhere.
+    """
+
+    if hasattr(PROXY_MANAGER, "as_httpx"):
+        return PROXY_MANAGER.as_httpx()  # type: ignore[attr-defined]
+    proxies = PROXY_MANAGER.as_requests()
+    if not proxies:
+        return None
+    http_proxy = proxies.get("http")
+    https_proxy = proxies.get("https", http_proxy)
+    proxy_mapping: Dict[str, str] = {}
+    if http_proxy:
+        proxy_mapping["http://"] = http_proxy
+    if https_proxy:
+        proxy_mapping["https://"] = https_proxy
+    return proxy_mapping or None
+
 # User agent that looks like a regular browser
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
@@ -381,7 +404,7 @@ def run(cfg: dict, ctx: dict) -> dict:
             "Upgrade-Insecure-Requests": "1"
         }
         
-        proxies = PROXY_MANAGER.as_httpx()
+        proxies = _proxy_settings_for_httpx()
         with httpx.Client(
             headers=headers,
             follow_redirects=True,
