@@ -58,9 +58,9 @@ kpi_targets:
   min_lines_per_s: 50
 
 budgets:
-  max_http_bytes: 52428800   # 50MB - supports Google Maps enrichment
-  max_http_requests: 8000    # higher cap for large Google Maps batches
-  time_budget_min: 360       # allow long-running enrichments to complete
+  max_http_bytes: 0          # 0 = pas de limite de bytes (OK pour ce test 10k)
+  max_http_requests: 20000   # large pour 10k requêtes Google Maps
+  time_budget_min: 1800      # 1800 minutes = 30h max de budget temps
   ram_mb: 4096
 
 retention_days: 30
