@@ -13,11 +13,13 @@ Searches maps.google.com for business information using address components to ex
 Results are merged into the dataset to enrich company information.
 """
 
+import os
 import re
 import time
 import urllib.parse
 import random
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Set, Tuple
 import pandas as pd
 import pyarrow as pa
@@ -30,9 +32,16 @@ from utils.parquet import ParquetBatchWriter
 from utils.state import SequentialRunState
 
 # Configuration
-MAPS_TIMEOUT = 15.0
-REQUEST_DELAY = (2.0, 4.0)  # Random delay between requests (min, max) in seconds
-MAX_WORKERS = 1  # Very limited to avoid being blocked by Google Maps
+GMAPS_WORKERS = int(os.getenv("GMAPS_WORKERS", "2"))  # concurrency
+GMAPS_DELAY_MIN = float(os.getenv("GMAPS_DELAY_MIN", "0.5"))  # seconds
+GMAPS_DELAY_MAX = float(os.getenv("GMAPS_DELAY_MAX", "1.0"))  # seconds
+GMAPS_TIMEOUT = float(os.getenv("GMAPS_TIMEOUT", "8.0"))  # seconds
+
+SKIP_IF_DOMAIN_AND_PHONE = os.getenv("GMAPS_SKIP_IF_DOMAIN_AND_PHONE", "1") == "1"
+
+MAPS_TIMEOUT = GMAPS_TIMEOUT
+REQUEST_DELAY = (GMAPS_DELAY_MIN, GMAPS_DELAY_MAX)
+MAX_WORKERS = GMAPS_WORKERS  # kept for compatibility with existing code paths
 RETRY_COUNT = 2
 
 PROXY_MANAGER = ProxyManager()
@@ -68,6 +77,66 @@ PHONE_REGEX = re.compile(r'(?:\+33|0)[1-9](?:[.\-\s]?\d{2}){4}')
 EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 RATING_REGEX = re.compile(r'(\d+[.,]\d+)\s*(?:étoiles?|stars?|★)', re.IGNORECASE)
 REVIEWS_REGEX = re.compile(r'(\d+)\s*(?:avis|reviews?|commentaires?)', re.IGNORECASE)
+
+@dataclass
+class GMapsStats:
+    raw_count: int = 0
+    after_cleanup: int = 0
+    unique_candidates: int = 0
+    queries_sent: int = 0
+    queries_skipped_dup: int = 0
+    start_time: float = 0.0
+
+    def start(self) -> None:
+        self.start_time = time.time()
+
+    def elapsed_minutes(self) -> float:
+        if self.start_time == 0.0:
+            return 0.0
+        return (time.time() - self.start_time) / 60.0
+
+    def requests_per_minute(self) -> float:
+        minutes = self.elapsed_minutes()
+        if minutes <= 0:
+            return 0.0
+        return self.queries_sent / minutes
+
+def _prepare_addresses_dataframe(df: pd.DataFrame, logger) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Clean, filter, and deduplicate addresses before querying Google Maps."""
+    df_raw = df
+    raw_count = len(df_raw)
+    df_clean = df_raw.copy()
+
+    address_col = None
+    for cand in ["adresse_complete", "address", "full_address", "maps_query", "adresse"]:
+        if cand in df_clean.columns:
+            address_col = cand
+            break
+
+    if address_col is None:
+        if logger:
+            logger.warning("Google Maps address column not found, skipping cleanup")
+        return df_raw, None
+
+    df_clean[address_col] = df_clean[address_col].astype("string").str.strip()
+    df_clean = df_clean[df_clean[address_col].notna() & (df_clean[address_col].str.len() >= 10)]
+
+    subset = [c for c in ["adresse_complete", "code_postal", "ville"] if c in df_clean.columns]
+    if subset:
+        df_clean = df_clean.drop_duplicates(subset=subset)
+
+    if SKIP_IF_DOMAIN_AND_PHONE and {"domain_root", "telephone_norm"}.issubset(df_clean.columns):
+        df_clean = df_clean[~(df_clean["domain_root"].notna() & df_clean["telephone_norm"].notna())]
+
+    filtered_count = len(df_clean)
+    if logger:
+        logger.info(
+            "Google Maps address prep | raw=%d after_cleanup=%d",
+            raw_count,
+            filtered_count,
+        )
+
+    return df_clean, address_col
 
 def _build_address_query(row: pd.Series) -> str:
     """Build address query from DataFrame row."""
@@ -298,6 +367,14 @@ def run(cfg: dict, ctx: dict) -> dict:
     """Run Google Maps search enrichment."""
     logger = ctx.get("logger")
     if logger:
+        logger.info(
+            "Google Maps config | workers=%s delay=(%.2f, %.2f) timeout=%.1fs skip_if_domain_and_phone=%s",
+            GMAPS_WORKERS,
+            GMAPS_DELAY_MIN,
+            GMAPS_DELAY_MAX,
+            GMAPS_TIMEOUT,
+            SKIP_IF_DOMAIN_AND_PHONE,
+        )
         logger.info("Google Maps proxy enabled: %s", PROXY_MANAGER.enabled)
     t0 = time.time()
 
@@ -328,6 +405,9 @@ def run(cfg: dict, ctx: dict) -> dict:
 
     request_tracker = ctx.get("request_tracker")
     output_path = outdir / "google_maps_enriched.parquet"
+    stats = GMapsStats()
+    raw_address_count = 0
+    clean_address_count = 0
     
     try:
         # Load main input data
@@ -339,12 +419,18 @@ def run(cfg: dict, ctx: dict) -> dict:
         if df.empty:
             return {"status": "SKIPPED", "reason": "EMPTY_INPUT"}
         
+        addresses_df: Optional[pd.DataFrame] = None
+        address_col: Optional[str] = None
+
         # Use database.csv if available, otherwise fall back to building addresses from components
         if database_df is not None:
-            # Use addresses from database.csv
-            addresses_to_search = database_df[['adresse', 'company_name']].drop_duplicates()
+            raw_address_count = len(database_df)
+            addresses_df, address_col = _prepare_addresses_dataframe(database_df, logger)
+            if address_col is None:
+                addresses_df = database_df
+            clean_address_count = len(addresses_df)
             if logger:
-                logger.info(f"Using {len(addresses_to_search)} addresses from database.csv")
+                logger.info("Using %d addresses from database.csv", len(addresses_df))
         else:
             # Fall back to old behavior
             # Check for required columns
@@ -362,19 +448,51 @@ def run(cfg: dict, ctx: dict) -> dict:
             if valid_queries.empty:
                 return {"status": "SKIPPED", "reason": "NO_VALID_QUERIES"}
             
-            addresses_to_search = valid_queries[['maps_query']].drop_duplicates()
-            addresses_to_search.columns = ['adresse']
-            addresses_to_search['company_name'] = ''
+            raw_address_count = len(valid_queries)
+            addresses_df, address_col = _prepare_addresses_dataframe(valid_queries, logger)
+            if address_col is None:
+                address_col = "maps_query"
+                addresses_df = valid_queries
+            clean_address_count = len(addresses_df)
+            if logger:
+                logger.info("Using %d addresses from normalized data", len(addresses_df))
         
-        # Get unique addresses to search
+        if addresses_df is None:
+            return {"status": "SKIPPED", "reason": "NO_ADDRESS_DATA"}
+
+        if address_col is None:
+            if logger:
+                logger.warning("No address column detected, cannot prepare queries")
+            return {"status": "SKIPPED", "reason": "NO_ADDRESS_COLUMN"}
+
         seen_queries: Set[str] = set()
         unique_queries: List[str] = []
-        for raw in addresses_to_search['adresse']:
-            query = str(raw or "").strip()
-            if not query or query in seen_queries:
+        for _, row in addresses_df.iterrows():
+            raw_value = row.get(address_col, "")
+            query = str(raw_value or "").strip()
+            if not query:
                 continue
-            seen_queries.add(query)
+
+            parts = []
+            for col in ["adresse_complete", "code_postal", "ville"]:
+                if col in addresses_df.columns and pd.notna(row.get(col)):
+                    parts.append(str(row.get(col)))
+            query_key = "|".join(parts) if parts else query
+
+            if query_key in seen_queries:
+                if logger:
+                    logger.debug("Skipping duplicate Google Maps query: %s", query_key)
+                stats.queries_skipped_dup += 1
+                continue
+
+            seen_queries.add(query_key)
             unique_queries.append(query)
+
+        stats.raw_count = raw_address_count
+        stats.after_cleanup = clean_address_count
+        stats.unique_candidates = len(unique_queries)
+        if stats.unique_candidates:
+            stats.start()
 
         if not unique_queries:
             return {"status": "SKIPPED", "reason": "NO_QUERIES"}
@@ -420,6 +538,15 @@ def run(cfg: dict, ctx: dict) -> dict:
 
                 state.mark_started(query)
                 try:
+                    stats.queries_sent += 1
+                    if logger and stats.queries_sent % 500 == 0:
+                        logger.info(
+                            "Google Maps progress | sent=%d skipped_dup=%d elapsed_min=%.2f req_per_min=%.2f",
+                            stats.queries_sent,
+                            stats.queries_skipped_dup,
+                            stats.elapsed_minutes(),
+                            stats.requests_per_minute(),
+                        )
                     result = _search_google_maps(query, session, request_tracker=request_tracker)
                     state.mark_completed(query, extra=result)
                     completed_map[query] = result
@@ -599,3 +726,21 @@ def run(cfg: dict, ctx: dict) -> dict:
         if logger:
             logger.error(f"Google Maps enrichment failed: {e}")
         return {"status": "FAIL", "error": str(e)}
+    finally:
+        if logger and (
+            stats.raw_count
+            or stats.after_cleanup
+            or stats.unique_candidates
+            or stats.queries_sent
+            or stats.queries_skipped_dup
+        ):
+            logger.info(
+                "Google Maps stats | raw=%d after_cleanup=%d unique_candidates=%d sent=%d skipped_dup=%d elapsed_min=%.2f req_per_min=%.2f",
+                stats.raw_count,
+                stats.after_cleanup,
+                stats.unique_candidates,
+                stats.queries_sent,
+                stats.queries_skipped_dup,
+                stats.elapsed_minutes(),
+                stats.requests_per_minute(),
+            )

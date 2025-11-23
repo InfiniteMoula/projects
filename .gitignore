@@ -5,6 +5,12 @@ __pycache__/
 *.pyd
 *.so
 *.dll
+.pytest_cache/
+.cache/
+cache/
+dumps/
+*.sqlite
+*.db
 
 # --- Virtual env ---
 .venv/

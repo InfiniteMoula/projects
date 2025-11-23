@@ -1,10 +1,10 @@
+import os
 import requests
-import math
 
 # --------- À PERSONNALISER ---------
 OWNER = "InfiniteMoula"
 REPO = "projects"
-GITHUB_TOKEN = "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"  # colle ton token ici entre guillemets
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 PER_PAGE = 100  # max autorisé par GitHub
 # -----------------------------------
 
@@ -12,6 +12,9 @@ API_URL = f"https://api.github.com/repos/{OWNER}/{REPO}/commits"
 
 
 def fetch_all_commits():
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN manquant dans les variables d'environnement.")
+
     session = requests.Session()
     session.headers.update({
         "Authorization": f"token {GITHUB_TOKEN}",
