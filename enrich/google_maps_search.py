@@ -38,6 +38,9 @@ GMAPS_WORKERS = int(os.getenv("GMAPS_WORKERS", "2"))  # concurrency
 GMAPS_DELAY_MIN = float(os.getenv("GMAPS_DELAY_MIN", "0.5"))  # seconds
 GMAPS_DELAY_MAX = float(os.getenv("GMAPS_DELAY_MAX", "1.0"))  # seconds
 GMAPS_TIMEOUT = float(os.getenv("GMAPS_TIMEOUT", "8.0"))  # seconds
+GMAPS_MAX_ROWS = int(os.getenv("GMAPS_MAX_ROWS", "10000"))
+_seed_env = os.getenv("GMAPS_SAMPLE_SEED")
+GMAPS_SAMPLE_SEED = int(_seed_env) if _seed_env is not None else None
 
 SKIP_IF_DOMAIN_AND_PHONE = os.getenv("GMAPS_SKIP_IF_DOMAIN_AND_PHONE", "1") == "1"
 
@@ -84,7 +87,9 @@ REVIEWS_REGEX = re.compile(r'(\d+)\s*(?:avis|reviews?|commentaires?)', re.IGNORE
 class GMapsStats:
     raw_count: int = 0
     after_cleanup: int = 0
+    unique_candidates_before_cap: int = 0
     unique_candidates: int = 0
+    capped_candidates: int = 0
     queries_sent: int = 0
     queries_skipped_dup: int = 0
     start_time: float = 0.0
@@ -428,6 +433,11 @@ def run(cfg: dict, ctx: dict) -> dict:
             GMAPS_TIMEOUT,
             SKIP_IF_DOMAIN_AND_PHONE,
         )
+        logger.info(
+            "Google Maps sampling config | max_rows=%s sample_seed=%s",
+            GMAPS_MAX_ROWS,
+            GMAPS_SAMPLE_SEED,
+        )
         logger.info("Google Maps proxy enabled: %s", PROXY_MANAGER.enabled)
     t0 = time.time()
 
@@ -543,7 +553,16 @@ def run(cfg: dict, ctx: dict) -> dict:
 
         stats.raw_count = raw_address_count
         stats.after_cleanup = clean_address_count
+        stats.unique_candidates_before_cap = len(unique_queries)
+
+        if GMAPS_MAX_ROWS > 0 and len(unique_queries) > GMAPS_MAX_ROWS:
+            unique_queries = (
+                pd.Series(unique_queries)
+                .sample(n=GMAPS_MAX_ROWS, random_state=GMAPS_SAMPLE_SEED, replace=False)
+                .tolist()
+            )
         stats.unique_candidates = len(unique_queries)
+        stats.capped_candidates = len(unique_queries)
         if stats.unique_candidates:
             stats.start()
 
@@ -791,9 +810,10 @@ def run(cfg: dict, ctx: dict) -> dict:
             or stats.queries_skipped_dup
         ):
             logger.info(
-                "Google Maps stats | raw=%d after_cleanup=%d unique_candidates=%d sent=%d skipped_dup=%d elapsed_min=%.2f req_per_min=%.2f",
+                "Google Maps stats | raw=%d after_cleanup=%d unique_candidates_before_cap=%d capped_candidates=%d sent=%d skipped_dup=%d elapsed_min=%.2f req_per_min=%.2f",
                 stats.raw_count,
                 stats.after_cleanup,
+                stats.unique_candidates_before_cap,
                 stats.unique_candidates,
                 stats.queries_sent,
                 stats.queries_skipped_dup,
