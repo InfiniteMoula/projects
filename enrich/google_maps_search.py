@@ -20,6 +20,8 @@ import urllib.parse
 import random
 from pathlib import Path
 from dataclasses import dataclass
+import errno
+import logging
 from typing import Callable, Dict, List, Optional, Set, Tuple
 import pandas as pd
 import pyarrow as pa
@@ -137,6 +139,57 @@ def _prepare_addresses_dataframe(df: pd.DataFrame, logger) -> Tuple[pd.DataFrame
         )
 
     return df_clean, address_col
+
+def _safe_save_state(
+    action: Callable[[], None],
+    logger: Optional[logging.Logger],
+    max_retries: int = 3,
+    delay_sec: float = 0.5,
+) -> None:
+    """Persist state with retries on transient Windows access-denied errors."""
+    log = logger or logging.getLogger(__name__)
+    for attempt in range(1, max_retries + 1):
+        try:
+            action()
+            return
+        except PermissionError as e:
+            winerror = getattr(e, "winerror", None)
+            if winerror == 5 or e.errno == errno.EACCES:
+                log.warning(
+                    "Failed to save Google Maps state (attempt %d/%d): %r",
+                    attempt,
+                    max_retries,
+                    e,
+                )
+                if attempt < max_retries:
+                    time.sleep(delay_sec)
+                    continue
+                log.error(
+                    "Giving up on saving Google Maps state after %d attempts: %r",
+                    max_retries,
+                    e,
+                )
+                return
+            raise
+        except OSError as e:
+            winerror = getattr(e, "winerror", None)
+            if winerror == 5 or e.errno == errno.EACCES:
+                log.warning(
+                    "Failed to save Google Maps state (attempt %d/%d, OSError): %r",
+                    attempt,
+                    max_retries,
+                    e,
+                )
+                if attempt < max_retries:
+                    time.sleep(delay_sec)
+                    continue
+                log.error(
+                    "Giving up on saving Google Maps state after %d attempts (OSError): %r",
+                    max_retries,
+                    e,
+                )
+                return
+            raise
 
 def _build_address_query(row: pd.Series) -> str:
     """Build address query from DataFrame row."""
@@ -498,7 +551,7 @@ def run(cfg: dict, ctx: dict) -> dict:
             return {"status": "SKIPPED", "reason": "NO_QUERIES"}
 
         state = SequentialRunState(outdir / "google_maps_state.json")
-        state.set_metadata(total=len(unique_queries))
+        _safe_save_state(lambda: state.set_metadata(total=len(unique_queries)), logger)
 
         completed_map = state.metadata.get("completed_extra")
         if not isinstance(completed_map, dict):
@@ -536,7 +589,7 @@ def run(cfg: dict, ctx: dict) -> dict:
                 if logger:
                     logger.debug("Searching Google Maps for query %d/%d: %s", idx + 1, len(unique_queries), query[:50])
 
-                state.mark_started(query)
+                _safe_save_state(lambda: state.mark_started(query), logger)
                 try:
                     stats.queries_sent += 1
                     if logger and stats.queries_sent % 500 == 0:
@@ -548,11 +601,11 @@ def run(cfg: dict, ctx: dict) -> dict:
                             stats.requests_per_minute(),
                         )
                     result = _search_google_maps(query, session, request_tracker=request_tracker)
-                    state.mark_completed(query, extra=result)
+                    _safe_save_state(lambda: state.mark_completed(query, extra=result), logger)
                     completed_map[query] = result
                 except budget_middleware.BudgetExceededError:
-                    state.mark_failed(query, "budget_exceeded")
-                    state.set_metadata(last_error=query, processed=idx)
+                    _safe_save_state(lambda: state.mark_failed(query, "budget_exceeded"), logger)
+                    _safe_save_state(lambda: state.set_metadata(last_error=query, processed=idx), logger)
                     raise
                 except Exception as exc:
                     if logger:
@@ -569,7 +622,7 @@ def run(cfg: dict, ctx: dict) -> dict:
                         "director_names": [],
                         "search_status": f"error_{type(exc).__name__}",
                     }
-                    state.mark_completed(query, extra=failure_result)
+                    _safe_save_state(lambda: state.mark_completed(query, extra=failure_result), logger)
                     completed_map[query] = failure_result
                 finally:
                     pending_queries.discard(query)
@@ -707,10 +760,13 @@ def run(cfg: dict, ctx: dict) -> dict:
             logger.info(f"Google Maps enrichment completed in {elapsed:.1f}s")
             logger.info(f"Successfully enriched {successful_searches}/{total_searches} queries")
         
-        state.set_metadata(
-            successful_searches=successful_searches,
-            records=len(search_results),
-            last_output=str(output_path),
+        _safe_save_state(
+            lambda: state.set_metadata(
+                successful_searches=successful_searches,
+                records=len(search_results),
+                last_output=str(output_path),
+            ),
+            logger,
         )
 
         return {
