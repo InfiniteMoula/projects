@@ -328,13 +328,17 @@ async def _validate_domains(
     timeout = httpx.Timeout(DOMAIN_GUESS_HTTP_TIMEOUT)
     semaphore = asyncio.Semaphore(DOMAIN_GUESS_WORKERS)
     results: Dict[str, DomainCheckResult] = {}
+    unique_domains = list(set(domains))
+
     async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=timeout, limits=limits, proxies=proxies) as client:
-        tasks = {
-            asyncio.create_task(_check_domain(domain, client, semaphore, request_tracker=request_tracker)): domain
-            for domain in set(domains)
+        tasks: Dict[str, asyncio.Task] = {
+            domain: asyncio.create_task(
+                _check_domain(domain, client, semaphore, request_tracker=request_tracker)
+            )
+            for domain in unique_domains
         }
-        for task in asyncio.as_completed(tasks):
-            domain = tasks[task]
+
+        for domain, task in tasks.items():
             try:
                 result = await task
                 results[domain] = result
@@ -343,6 +347,7 @@ async def _validate_domains(
             except Exception as exc:  # pragma: no cover - resilience
                 MODULE_LOGGER.warning("Domain guess: failed to validate %s: %s", domain, exc)
                 results[domain] = DomainCheckResult(domain=domain)
+
     return results
 
 
